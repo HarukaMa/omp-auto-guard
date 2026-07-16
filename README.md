@@ -45,9 +45,9 @@ Every tool call receives one static policy decision:
 
 Classifier failures, invalid responses, unavailable models, oversized inputs, and timeouts fail closed to `ask`.
 
-Approval identity is a SHA-256 digest over the approval epoch, working directory, tool name, and canonicalized arguments. A permit is single-use, expires five minutes after approval is recorded (not five minutes after the Ask is issued), and is invalidated by lifecycle changes, working-directory changes, or pending user input. Rejecting, timing out, redirecting to chat, entering custom Ask text, or changing the Ask payload does not authorize the call.
+Approval identity is a SHA-256 digest over the approval epoch, working directory, tool name, and canonicalized arguments. A permit is single-use, expires five minutes after approval is recorded (not five minutes after the Ask is issued), and is invalidated by lifecycle changes, working-directory changes, or queued input or advice. Rejecting, timing out, redirecting to chat, entering custom Ask text, or changing protected Ask fields does not authorize the call.
 
-The Ask prompt shows a short fingerprint, a redacted argument summary capped at 512 characters, and a best-effort agent rationale capped at 240 characters. Long values may be abbreviated, and the rationale is explicitly non-authoritative. The full digest remains internal; the native Ask call must still reproduce the guard-generated payload exactly.
+The Ask template shows a short fingerprint and a redacted argument summary capped at 512 characters. Before calling Ask, the agent must replace the designated preview placeholder with the same non-empty, single-line rationale in both options; the rationale is capped at 400 characters and remains explicitly non-authoritative. Auto Guard re-renders the complete expected input from its own template and the validated rationale before exact comparison. The full call digest remains internal.
 
 Exact arguments do not freeze resources referenced by those arguments. A path, branch, tag, URL, database selection, or remote name may resolve to different state between approval and execution. Prefer immutable identifiers and tool-supported preconditions, such as commit SHAs, object versions, expected revisions, and conditional writes. Auto Guard cannot generically eliminate this time-of-check/time-of-use risk.
 

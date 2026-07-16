@@ -84,8 +84,8 @@ interface ApprovalAskInput {
 			question: string;
 			header: string;
 			options: [
-				{ label: string; description: string },
-				{ label: string; description: string },
+				{ label: string; description: string; preview: string },
+				{ label: string; description: string; preview: string },
 			];
 			multi: false;
 			recommended: number;
@@ -286,7 +286,9 @@ const APPROVE_OPTION = "Approve once";
 const REJECT_OPTION = "Reject";
 const APPROVAL_ASK_PREFIX = "omp-auto-guard";
 const APPROVAL_SUMMARY_MAX_CHARS = 512;
-const APPROVAL_RATIONALE_MAX_CHARS = 240;
+const APPROVAL_RATIONALE_MAX_CHARS = 400;
+const APPROVAL_RATIONALE_PLACEHOLDER = "__OMP_AUTO_GUARD_AGENT_RATIONALE__";
+const APPROVAL_RATIONALE_PREFIX = "Agent rationale (non-authoritative):\n";
 const RISK_BEARING_KEY =
 	/^(?:command|query|path|paths|url|uri|host|target|targets|destination|dest|cwd|branch|tag|ref)$/i;
 
@@ -352,9 +354,10 @@ function pendingApprovalResult(event: ToolCallEvent, pending: PendingApproval): 
 		block: true,
 		reason: [
 			`OMP Auto Guard requires native user approval ${pending.id} for ${event.toolName}.`,
-			"Invoke the native ask tool exactly once with the JSON below, then wait for its actual tool result.",
+			"Invoke the native ask tool exactly once with the JSON template below, then wait for its actual tool result.",
+			`Replace ${JSON.stringify(APPROVAL_RATIONALE_PLACEHOLDER)} in both option preview fields with the same concise, single-line rationale. Change nothing else.`,
 			"Do not use resolve. Do not retry the blocked call until Ask returns.",
-			`Native Ask input (use exactly):\n${JSON.stringify(pending.askInput)}`,
+			`Native Ask input (use exactly after replacing the rationale placeholder):\n${JSON.stringify(pending.askInput)}`,
 		].join("\n"),
 	};
 }
@@ -389,22 +392,12 @@ function approvalInputSummary(input: Record<string, unknown>): string {
 	return `${summary.slice(0, APPROVAL_SUMMARY_MAX_CHARS - marker.length)}${marker}`;
 }
 
-function approvalAgentRationale(ctx: ExtensionContext): string | undefined {
-	const excerpt = balancedRecentConversation(ctx.sessionManager.getBranch())
-		.slice()
-		.reverse()
-		.find(item => item.role === "assistant")?.text;
-	if (!excerpt) return undefined;
-	const normalized = excerpt.replace(/\s+/g, " ").trim();
-	return normalized ? abbreviatedValue(normalized, APPROVAL_RATIONALE_MAX_CHARS) : undefined;
-}
 
 function createApprovalAskInput(
 	event: ToolCallEvent,
 	token: string,
 	approvalId: string,
 	fingerprint: string,
-	agentRationale: string | undefined,
 	verdict: Exclude<GuardVerdict, { decision: "classify" }> | ClassifierVerdict,
 ): ApprovalAskInput {
 	const question = [
@@ -415,9 +408,9 @@ function createApprovalAskInput(
 		`Category: ${verdict.category}`,
 		`Reason: ${verdict.reason}`,
 		`Arguments (redacted summary; long values may be abbreviated):\n${approvalInputSummary(event.input)}`,
-		`Agent rationale (non-authoritative):\n${agentRationale ?? "(not available)"}`,
 		"Allow this exact blocked tool call once?",
 	].join("\n\n");
+	const preview = `${APPROVAL_RATIONALE_PREFIX}${APPROVAL_RATIONALE_PLACEHOLDER}`;
 
 	return {
 		questions: [
@@ -429,10 +422,12 @@ function createApprovalAskInput(
 					{
 						label: APPROVE_OPTION,
 						description: "Allow only this exact blocked call, one time.",
+						preview,
 					},
 					{
 						label: REJECT_OPTION,
 						description: "Do not authorize this call.",
+						preview,
 					},
 				],
 				multi: false,
@@ -449,6 +444,44 @@ function cleanupApprovals(approvals: Map<string, ApprovalRecord>, now = Date.now
 			approval.status === "pending" && approval.askToolCallId === undefined && approval.expiresAt <= now;
 		if (expiredPermit || expiredUnboundRequest) approvals.delete(key);
 	}
+}
+
+function approvalAskInputWithRationale(template: ApprovalAskInput, rationale: string): ApprovalAskInput {
+	const question = template.questions[0];
+	const preview = `${APPROVAL_RATIONALE_PREFIX}${rationale}`;
+	return {
+		questions: [
+			{
+				...question,
+				options: [
+					{ ...question.options[0], preview },
+					{ ...question.options[1], preview },
+				],
+			},
+		],
+	};
+}
+
+function approvalRationale(input: Record<string, unknown>): string | undefined {
+	if (!Array.isArray(input.questions) || input.questions.length !== 1) return undefined;
+	const question = input.questions[0];
+	if (!isRecord(question) || !Array.isArray(question.options) || question.options.length !== 2) return undefined;
+	const first = question.options[0];
+	const second = question.options[1];
+	if (!isRecord(first) || !isRecord(second)) return undefined;
+	if (typeof first.preview !== "string" || first.preview !== second.preview) return undefined;
+	if (!first.preview.startsWith(APPROVAL_RATIONALE_PREFIX)) return undefined;
+	const rationale = first.preview.slice(APPROVAL_RATIONALE_PREFIX.length);
+	if (
+		rationale === APPROVAL_RATIONALE_PLACEHOLDER ||
+		rationale.length === 0 ||
+		rationale.length > APPROVAL_RATIONALE_MAX_CHARS ||
+		rationale !== rationale.trim() ||
+		/[\u0000-\u001f\u007f]/.test(rationale)
+	) {
+		return undefined;
+	}
+	return rationale;
 }
 
 type ApprovalAskBinding = "bound" | "unrelated" | "mismatch";
@@ -474,7 +507,11 @@ function bindApprovalAsk(
 ): ApprovalAskBinding {
 	for (const approval of approvals.values()) {
 		if (approval.status !== "pending" || approval.askToolCallId !== undefined) continue;
-		if (!sameToolInput(event.input, approval.askInput)) continue;
+		const rationale = approvalRationale(event.input);
+		if (rationale === undefined) continue;
+		const expected = approvalAskInputWithRationale(approval.askInput, rationale);
+		if (!sameToolInput(event.input, expected)) continue;
+		approval.askInput = expected;
 		approval.askToolCallId = event.toolCallId;
 		return "bound";
 	}
@@ -578,7 +615,6 @@ async function enforceVerdict(
 			randomUUID(),
 			approvalId,
 			fingerprint,
-			approvalAgentRationale(ctx),
 			verdict,
 		),
 		expiresAt: Date.now() + APPROVAL_RETRY_WINDOW_MS,
@@ -615,7 +651,7 @@ export default function autoGuard(pi: ExtensionAPI): void {
 			clearApprovals();
 			return {
 				block: true,
-				reason: `OMP Auto Guard paused ${typedEvent.toolName} because unprocessed user input is pending. Retry only after the agent incorporates that input.`,
+				reason: `OMP Auto Guard paused ${typedEvent.toolName} because queued input or an advisory is pending. Retry only after the agent incorporates it.`,
 			};
 		}
 		const eventApprovalEpoch = approvalEpoch;
@@ -633,7 +669,7 @@ export default function autoGuard(pi: ExtensionAPI): void {
 			});
 			return {
 				block: true,
-				reason: "OMP Auto Guard blocked a mismatched guard approval Ask before display. Reuse the exact native Ask input from the current blocked call; do not reconstruct or modify it.",
+				reason: `OMP Auto Guard blocked a mismatched guard approval Ask before display. Replace only ${APPROVAL_RATIONALE_PLACEHOLDER} in both preview fields of the current template with the same concise, single-line rationale.`,
 			};
 		}
 

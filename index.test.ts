@@ -31,7 +31,7 @@ interface AskInput {
 		id: string;
 		question: string;
 		header?: string;
-		options: Array<{ label: string; description?: string }>;
+		options: Array<{ label: string; description?: string; preview?: string }>;
 		multi?: boolean;
 		recommended?: number;
 	}>;
@@ -40,7 +40,9 @@ interface AskInput {
 type ToolCallHandler = (event: ToolCall, context: unknown) => Promise<ToolCallResult | undefined>;
 type ToolResultHandler = (event: ToolResult) => ToolResultUpdate | undefined | Promise<ToolResultUpdate | undefined>;
 
-const ASK_INPUT_MARKER = "Native Ask input (use exactly):\n";
+const ASK_INPUT_MARKER = "Native Ask input (use exactly after replacing the rationale placeholder):\n";
+const RATIONALE_PREFIX = "Agent rationale (non-authoritative):\n";
+const RATIONALE_PLACEHOLDER = "__OMP_AUTO_GUARD_AGENT_RATIONALE__";
 const APPROVAL_CLEAR_EVENTS = [
 	"session_start",
 	"session_before_switch",
@@ -138,6 +140,17 @@ function extractAskInput(result: ToolCallResult | undefined): AskInput {
 	return JSON.parse(reason.slice(markerIndex + ASK_INPUT_MARKER.length)) as AskInput;
 }
 
+function withAgentRationale(
+	template: AskInput,
+	rationale = "This exact call is needed to complete the requested operation.",
+): AskInput {
+	const input = structuredClone(template);
+	for (const option of input.questions[0]?.options ?? []) {
+		option.preview = `${RATIONALE_PREFIX}${rationale}`;
+	}
+	return input;
+}
+
 function askCall(toolCallId: string, input: AskInput): ToolCall {
 	return { toolCallId, toolName: "ask", input: input as unknown as Record<string, unknown> };
 }
@@ -181,7 +194,7 @@ async function beginHandshake(
 ): Promise<AskInput> {
 	const blocked = await guard.toolCallHandler(call, guard.context);
 	expect(blocked?.block).toBe(true);
-	const input = extractAskInput(blocked);
+	const input = withAgentRationale(extractAskInput(blocked));
 	const allowedAsk = await guard.toolCallHandler(askCall(askToolCallId, input), guard.context);
 	expect(allowedAsk).toBeUndefined();
 	return input;
@@ -243,6 +256,7 @@ describe("native Ask approval retry", () => {
 		const blocked = await guard.toolCallHandler(call, guard.context);
 		expect(blocked?.block).toBe(true);
 		expect(blocked?.reason).toContain("Invoke the native ask tool exactly once");
+		expect(blocked?.reason).toContain("Replace \"__OMP_AUTO_GUARD_AGENT_RATIONALE__\"");
 		expect(blocked?.reason).toContain("Do not use resolve");
 		const input = extractAskInput(blocked);
 		expect(input.questions).toHaveLength(1);
@@ -254,28 +268,15 @@ describe("native Ask approval retry", () => {
 		expect(guard.confirmCalls).toBe(0);
 		expect(guard.sendMessageCalls).toBe(0);
 
-		const allowedAsk = await guard.toolCallHandler(askCall("ask-1", input), guard.context);
+		const askInput = withAgentRationale(input);
+		const allowedAsk = await guard.toolCallHandler(askCall("ask-1", askInput), guard.context);
 		expect(allowedAsk).toBeUndefined();
 		const prematureRetry = await guard.toolCallHandler({ ...call, toolCallId: "original-2" }, guard.context);
 		expect(prematureRetry?.block).toBe(true);
 		expect(prematureRetry?.reason).toContain("waiting for the native Ask result");
 	});
-	test("keeps approval prompts compact while preserving effect-bearing context", async () => {
+	test("keeps approval prompts compact and puts agent rationale in both previews", async () => {
 		const guard = setupGuard();
-		guard.setBranch([
-			{
-				type: "message",
-				message: {
-					role: "assistant",
-					content: [
-						{
-							type: "text",
-							text: `I need this exact mutation to finish the approved release. ${"context ".repeat(100)}`,
-						},
-					],
-				},
-			},
-		]);
 		const blocked = await guard.toolCallHandler(
 			{
 				toolCallId: "compact-1",
@@ -284,18 +285,55 @@ describe("native Ask approval retry", () => {
 			},
 			guard.context,
 		);
-		const question = extractAskInput(blocked).questions[0]!.question;
+		const template = extractAskInput(blocked);
+		const question = template.questions[0]!.question;
 		const summary = question
 			.split("Arguments (redacted summary; long values may be abbreviated):\n")[1]!
-			.split("\n\nAgent rationale")[0]!;
-		const rationale = question.split("Agent rationale (non-authoritative):\n")[1]!.split("\n\n")[0]!;
+			.split("\n\nAllow this exact blocked tool call once?")[0]!;
 		expect(summary.length).toBeLessThanOrEqual(512);
 		expect(summary).toContain("command:");
 		expect(summary).toContain("chars");
 		expect(question).toMatch(/Call fingerprint: sha256:[0-9a-f]{16}/);
 		expect(question).not.toContain("x".repeat(1_000));
-		expect(rationale.length).toBeLessThanOrEqual(240);
-		expect(rationale).toContain("I need this exact mutation");
+		expect(template.questions[0]!.options.every(option => option.preview?.endsWith(RATIONALE_PLACEHOLDER))).toBe(
+			true,
+		);
+
+		const input = withAgentRationale(template, "I need this exact mutation to finish the approved release.");
+		expect(input.questions[0]!.options.map(option => option.preview)).toEqual([
+			`${RATIONALE_PREFIX}I need this exact mutation to finish the approved release.`,
+			`${RATIONALE_PREFIX}I need this exact mutation to finish the approved release.`,
+		]);
+		expect(await guard.toolCallHandler(askCall("compact-ask", input), guard.context)).toBeUndefined();
+	});
+
+	test("accepts only one bounded single-line rationale without other template changes", async () => {
+		const guard = setupGuard();
+		const call = guardedRead("rationale-1");
+		const blocked = await guard.toolCallHandler(call, guard.context);
+		const template = extractAskInput(blocked);
+		const invalidInputs = [
+			template,
+			withAgentRationale(template, ""),
+			withAgentRationale(template, "line one\nline two"),
+			withAgentRationale(template, "x".repeat(401)),
+			withAgentRationale(template, " padded "),
+		];
+		const unequal = withAgentRationale(template, "first");
+		unequal.questions[0]!.options[1]!.preview = `${RATIONALE_PREFIX}second`;
+		invalidInputs.push(unequal);
+		const changed = withAgentRationale(template, "valid rationale");
+		changed.questions[0]!.question += " changed";
+		invalidInputs.push(changed);
+
+		for (const [index, input] of invalidInputs.entries()) {
+			const result = await guard.toolCallHandler(askCall(`invalid-rationale-${index}`, input), guard.context);
+			expect(result?.block, String(index)).toBe(true);
+			expect(result?.reason, String(index)).toContain("mismatched guard approval Ask");
+		}
+
+		const valid = withAgentRationale(template, "x".repeat(400));
+		expect(await guard.toolCallHandler(askCall("valid-rationale", valid), guard.context)).toBeUndefined();
 	});
 
 
@@ -401,7 +439,7 @@ describe("native Ask approval retry", () => {
 		expect(extractAskInput(retry).questions[0]?.id).toStartWith("omp-auto-guard:");
 	});
 
-	test("pending user input invalidates permits and pauses execution", async () => {
+	test("pending input or advice invalidates permits and pauses execution", async () => {
 		const guard = setupGuard();
 		const call = guardedRead("pending-input-1");
 		await approveHandshake(guard, call, "pending-input-ask-1");
@@ -412,7 +450,7 @@ describe("native Ask approval retry", () => {
 			guard.context,
 		);
 		expect(paused?.block).toBe(true);
-		expect(paused?.reason).toContain("unprocessed user input is pending");
+		expect(paused?.reason).toContain("queued input or an advisory is pending");
 
 		guard.setPendingMessages(false);
 		const retry = await guard.toolCallHandler(
@@ -527,7 +565,8 @@ describe("native Ask approval retry", () => {
 		const guard = setupGuard();
 		const call = guardedRead("original-1");
 		const blocked = await guard.toolCallHandler(call, guard.context);
-		const expected = extractAskInput(blocked);
+		const template = extractAskInput(blocked);
+		const expected = withAgentRationale(template);
 		const wrong: AskInput = structuredClone(expected);
 		wrong.questions[0]!.id = "ordinary-question";
 
@@ -540,7 +579,7 @@ describe("native Ask approval retry", () => {
 			),
 		).toBeUndefined();
 		const stillPending = await guard.toolCallHandler({ ...call, toolCallId: "original-2" }, guard.context);
-		expect(extractAskInput(stillPending)).toEqual(expected);
+		expect(extractAskInput(stillPending)).toEqual(template);
 
 		expect(await guard.toolCallHandler(askCall("real-ask", expected), guard.context)).toBeUndefined();
 		expect(

@@ -38,7 +38,7 @@ Exact call binding does not snapshot referenced external state. The same path, b
 Classifier requests may contain working-directory paths, recent conversation, project/global instructions, and best-effort-redacted tool arguments. The classifier may use a different provider from the main agent. Redaction is not guaranteed to remove every secret.
 
 Audit logs may contain sensitive tool details and raw classifier output. Context logging is especially sensitive. Store logs with restricted permissions, limit retention, and never commit them.
-Native approval prompts contain a redacted argument summary capped at 512 characters and a non-authoritative agent rationale capped at 240 characters. Long values can be abbreviated. The exact call is bound by the full internal digest and exact Ask payload, but the user should reject an approval when the visible summary is insufficient.
+Native approval prompts contain a redacted argument summary capped at 512 characters and an agent-supplied, non-authoritative rationale capped at 400 characters. Auto Guard accepts only a non-empty, single-line rationale in the designated option-preview slots, then re-renders and exactly compares every Ask field before display. Long argument values can be abbreviated; reject an approval when the visible summary is insufficient.
 
 ## Operational guidance
 
