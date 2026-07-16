@@ -375,7 +375,7 @@ describe("classifier instruction context", () => {
 		expect(customSelected).not.toContain("There is no stopping condition other than completion");
 	});
 
-	test("keeps loaded context and append instructions without OMP footer policy", () => {
+	test("keeps OMP 16 and 17 context layouts without footer policy", () => {
 		const selected = selectClassifierInstructions([
 			[
 				"PROJECT",
@@ -385,6 +385,9 @@ describe("classifier instruction context", () => {
 				'<file path="PROJECT.md">PROJECT_SENTINEL</file>',
 				"</context>",
 				"<dir-context>DIR_CONTEXT_SENTINEL</dir-context>",
+				"<repo-rules>",
+				'<file path="RULES.md">REPO_RULES_SENTINEL</file>',
+				"</repo-rules>",
 				"Today is 2026-07-16.",
 				"<critical>",
 				"- Each response MUST advance the task.",
@@ -396,6 +399,7 @@ describe("classifier instruction context", () => {
 		expect(selected).toContain("GLOBAL_SENTINEL");
 		expect(selected).toContain("PROJECT_SENTINEL");
 		expect(selected).toContain("DIR_CONTEXT_SENTINEL");
+		expect(selected).toContain("REPO_RULES_SENTINEL");
 		expect(selected).toContain("APPEND_SENTINEL");
 		expect(selected).not.toContain("ROLE\n==============");
 		expect(selected).not.toContain("There is no stopping condition other than completion");

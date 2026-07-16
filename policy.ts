@@ -625,7 +625,7 @@ export function selectClassifierInstructions(systemPrompt: readonly string[]): s
 				selected.push(text);
 				continue;
 			}
-			for (const tag of ["context", "dir-context"]) {
+			for (const tag of ["context", "dir-context", "repo-rules"]) {
 				const section = taggedSection(text.slice(0, criticalStart), tag);
 				if (section) selected.push(section);
 			}

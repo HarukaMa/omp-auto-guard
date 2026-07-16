@@ -12,10 +12,10 @@ It is not a sandbox, an access-control boundary, or a substitute for operating-s
 
 ## Requirements
 
-- OMP 16.5.1 or a compatible 16.x release
+- OMP 16.5.1 through 17.x
 - Bun 1.3.14 or newer
 
-OMP 16.5.1 is the version exercised by this repository. Prompt rendering and extension APIs may change in later OMP releases.
+OMP 17.0.1 is the version exercised by this repository. OMP 16.5.1 was also verified before the 17.x upgrade. Prompt rendering and extension APIs may change in later OMP releases.
 
 ## Installation
 
