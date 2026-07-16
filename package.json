@@ -1,0 +1,39 @@
+{
+  "name": "omp-auto-guard",
+  "version": "0.1.0",
+  "description": "Pre-execution consequence review and exact approval permits for Oh My Pi tool calls",
+  "type": "module",
+  "private": true,
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun test"
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-ai": ">=16.5.1 <17",
+    "@oh-my-pi/pi-coding-agent": ">=16.5.1 <17"
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-ai": "16.5.1",
+    "@oh-my-pi/pi-coding-agent": "16.5.1",
+    "@types/bun": "1.3.14",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "bun": ">=1.3.14"
+  },
+  "packageManager": "bun@1.3.14",
+  "omp": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "files": [
+    "index.ts",
+    "policy.ts",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md"
+  ]
+}
