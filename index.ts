@@ -1,7 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { complete, type Effort, type ImageContent, type TextContent, type UserMessage } from "@oh-my-pi/pi-ai";
+import {
+	complete,
+	type AssistantMessage,
+	type Effort,
+	type ImageContent,
+	type TextContent,
+	type UserMessage,
+} from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import {
 	CLASSIFIER_EFFORTS,
@@ -124,6 +131,23 @@ async function appendClassifierAudit(record: Record<string, unknown>): Promise<v
 		console.error(`[omp-auto-guard] could not append audit log: ${reason}`);
 	}
 }
+function classifierResponseDiagnostics(
+	response: AssistantMessage,
+	includeContent = false,
+): Record<string, unknown> {
+	return {
+		responseId: response.responseId,
+		stopReason: response.stopReason,
+		stopDetails: response.stopDetails,
+		usage: response.usage,
+		errorMessage: response.errorMessage,
+		errorStatus: response.errorStatus,
+		errorId: response.errorId,
+		contentTypes: response.content.map(item => item.type),
+		content: includeContent ? response.content : undefined,
+	};
+}
+
 
 async function classifyWithModel(
 	event: ToolCallEvent,
@@ -208,6 +232,7 @@ async function classifyWithModel(
 	let rawResponse: string | undefined;
 	let finalVerdict: ClassifierVerdict | undefined;
 	let failure: string | undefined;
+	let invalidResponse: Record<string, unknown> | undefined;
 
 	try {
 		const apiKey = await ctx.modelRegistry.getApiKey(model);
@@ -219,7 +244,7 @@ async function classifyWithModel(
 		const response = await complete(
 			model,
 			{ systemPrompt: [CLASSIFIER_PROMPT, ...classifierInstructions], messages: [userMessage] },
-			{ apiKey, signal: controller.signal, maxTokens: 300, temperature: 0, reasoning: effort },
+			{ apiKey, signal: controller.signal, temperature: 0, reasoning: effort },
 		);
 		if (controller.signal.aborted) {
 			failure = `Classifier exceeded ${timeoutMs} ms`;
@@ -235,8 +260,15 @@ async function classifyWithModel(
 			.filter((item): item is { type: "text"; text: string } => item.type === "text")
 			.map(item => item.text)
 			.join("\n");
+		const parsedVerdict = parseClassifierVerdict(rawResponse);
+		if (!parsedVerdict) {
+			invalidResponse = classifierResponseDiagnostics(
+				response,
+				process.env.OMP_AUTO_GUARD_LOG_INCLUDE_CONTEXT === "1",
+			);
+		}
 		finalVerdict = {
-			...(parseClassifierVerdict(rawResponse) ?? {
+			...(parsedVerdict ?? {
 				decision: "ask",
 				category: "classifier-invalid",
 				reason: "Safety classifier returned an invalid decision",
@@ -268,6 +300,7 @@ async function classifyWithModel(
 			toolName: event.toolName,
 			staticPolicyObservation: policyReason,
 			rawResponse,
+			invalidResponse,
 			verdict: finalVerdict,
 			error: failure,
 			input: process.env.OMP_AUTO_GUARD_LOG_INCLUDE_CONTEXT === "1" ? payload : undefined,

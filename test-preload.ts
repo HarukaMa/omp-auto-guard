@@ -14,9 +14,20 @@ for (const name of [
 	delete process.env[name];
 }
 
+type CompleteImplementation = (...args: unknown[]) => unknown;
+
+const defaultComplete: CompleteImplementation = () => {
+	throw new Error("classifier should not run in approval workflow tests");
+};
+let completeImplementation = defaultComplete;
+
+export function setCompleteImplementation(implementation = defaultComplete): void {
+	completeImplementation = implementation;
+}
+
 mock.module("@oh-my-pi/pi-ai", () => ({
 	...piAi,
-	complete() {
-		throw new Error("classifier should not run in approval workflow tests");
+	complete(...args: unknown[]) {
+		return completeImplementation(...args);
 	},
 }));

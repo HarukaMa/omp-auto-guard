@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setCompleteImplementation } from "./test-preload";
 import autoGuard, { CLASSIFIER_PROMPT, classifierTimeoutMs } from "./index";
 import { MAX_CLASSIFIER_INPUT_BYTES } from "./policy";
 
@@ -84,8 +87,16 @@ function setupGuard(hasUI = true) {
 			},
 		},
 		hasUI,
-		model: undefined,
+		model: undefined as unknown,
+		modelRegistry: {
+			async getApiKey() {
+				return "test-key";
+			},
+		},
 		models: { resolve: () => undefined },
+		getSystemPrompt() {
+			return "";
+		},
 		ui: {
 			confirm() {
 				confirmCalls += 1;
@@ -118,6 +129,9 @@ function setupGuard(hasUI = true) {
 		},
 		setCwd(value: string) {
 			context.cwd = value;
+		},
+		setModel(value: unknown) {
+			context.model = value;
 		},
 		sessionHandlers,
 		toolCallHandler,
@@ -245,6 +259,58 @@ describe("classifier runtime limits", () => {
 		expect(classifierTimeoutMs("not-a-number")).toBe(12_000);
 		expect(classifierTimeoutMs("500")).toBe(1_000);
 		expect(classifierTimeoutMs("60000")).toBe(28_000);
+	});
+	test("omits the output cap and logs invalid response diagnostics", async () => {
+		const guard = setupGuard();
+		const logPath = join(tmpdir(), `omp-auto-guard-${crypto.randomUUID()}.jsonl`);
+		const previousLogPath = process.env.OMP_AUTO_GUARD_LOG_PATH;
+		const previousIncludeContext = process.env.OMP_AUTO_GUARD_LOG_INCLUDE_CONTEXT;
+		const content = [{ type: "thinking", thinking: "unfinished classifier response" }] as const;
+		let requestOptions: Record<string, unknown> | undefined;
+
+		process.env.OMP_AUTO_GUARD_LOG_PATH = logPath;
+		process.env.OMP_AUTO_GUARD_LOG_INCLUDE_CONTEXT = "1";
+		guard.setModel({ provider: "openai-codex", id: "gpt-5.6-terra", reasoning: true });
+		setCompleteImplementation((...args) => {
+			requestOptions = args[2] as Record<string, unknown>;
+			return Promise.resolve({
+				content,
+				responseId: "response-1",
+				stopReason: "length",
+				usage: { input: 10, output: 300 },
+			});
+		});
+
+		try {
+			const result = await guard.toolCallHandler(
+				{
+					toolCallId: "invalid-classifier",
+					toolName: "write",
+					input: { path: "C:/tmp/output.txt", content: "test" },
+				},
+				guard.context,
+			);
+			expect(result?.block).toBe(true);
+			expect(requestOptions).not.toHaveProperty("maxTokens");
+
+			const record = JSON.parse((await Bun.file(logPath).text()).trim());
+			expect(record.rawResponse).toBe("");
+			expect(record.verdict.category).toBe("classifier-invalid");
+			expect(record.invalidResponse).toMatchObject({
+				responseId: "response-1",
+				stopReason: "length",
+				usage: { input: 10, output: 300 },
+				contentTypes: ["thinking"],
+				content,
+			});
+		} finally {
+			setCompleteImplementation();
+			if (previousLogPath === undefined) delete process.env.OMP_AUTO_GUARD_LOG_PATH;
+			else process.env.OMP_AUTO_GUARD_LOG_PATH = previousLogPath;
+			if (previousIncludeContext === undefined) delete process.env.OMP_AUTO_GUARD_LOG_INCLUDE_CONTEXT;
+			else process.env.OMP_AUTO_GUARD_LOG_INCLUDE_CONTEXT = previousIncludeContext;
+			await Bun.file(logPath).delete();
+		}
 	});
 });
 
