@@ -314,6 +314,61 @@ describe("classifier runtime limits", () => {
 	});
 });
 
+describe("builtin virtual-device routing", () => {
+	test("allows recall and classifies retain using inner semantics", async () => {
+		const guard = setupGuard();
+		const recall = await guard.toolCallHandler(
+			{
+				toolCallId: "xdev-recall",
+				toolName: "write",
+				input: { path: "xd://recall", content: JSON.stringify({ query: "deployment" }) },
+			},
+			guard.context,
+		);
+		expect(recall).toBeUndefined();
+
+		let payload: Record<string, unknown> | undefined;
+		guard.setModel({ provider: "openai-codex", id: "gpt-5.6-sol", reasoning: true });
+		setCompleteImplementation((...args) => {
+			const request = args[1] as { messages: [{ content: [{ text: string }] }] };
+			payload = JSON.parse(request.messages[0].content[0].text);
+			return Promise.resolve({
+				content: [
+					{
+						type: "text",
+						text: '{"decision":"allow","category":"authorized-memory-write","reason":"The user requested it."}',
+					},
+				],
+				responseId: "xdev-response",
+				stopReason: "stop",
+				usage: { input: 10, output: 10 },
+			});
+		});
+
+		try {
+			const retain = await guard.toolCallHandler(
+				{
+					toolCallId: "xdev-retain",
+					toolName: "write",
+					input: {
+						path: "xd://retain",
+						content: JSON.stringify({ items: [{ content: "fact" }] }),
+					},
+				},
+				guard.context,
+			);
+			expect(retain).toBeUndefined();
+			expect(payload).toMatchObject({
+				classifierTier: "strong",
+				toolName: "retain",
+				toolArguments: { items: [{ content: "fact" }] },
+			});
+		} finally {
+			setCompleteImplementation();
+		}
+	});
+});
+
 describe("native Ask approval retry", () => {
 	test("blocks with an exact fail-safe Ask payload and never starts detached confirmation", async () => {
 		const guard = setupGuard();

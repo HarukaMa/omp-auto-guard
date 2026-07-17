@@ -65,6 +65,44 @@ const SAFE_TOOLS = new Set([
 	"web_search",
 ]);
 
+const XDEV_BUILTIN_TOOLS: Record<string, true> = {
+	ast_edit: true,
+	ast_grep: true,
+	browser: true,
+	checkpoint: true,
+	debug: true,
+	github: true,
+	inspect_image: true,
+	lsp: true,
+	memory_edit: true,
+	recall: true,
+	reflect: true,
+	retain: true,
+	rewind: true,
+	web_search: true,
+};
+
+export function unwrapBuiltinXdevCall(
+	toolName: string,
+	input: Record<string, unknown>,
+): { toolName: string; input: Record<string, unknown> } {
+	const original = { toolName, input };
+	if (toolName !== "write" || typeof input.path !== "string" || typeof input.content !== "string") {
+		return original;
+	}
+	const path = input.path.trim();
+	if (path.slice(0, 5).toLowerCase() !== "xd://") return original;
+	const mountedToolName = path.slice(5);
+	if (XDEV_BUILTIN_TOOLS[mountedToolName] !== true) return original;
+	try {
+		const mountedInput: unknown = JSON.parse(input.content);
+		if (!mountedInput || typeof mountedInput !== "object" || Array.isArray(mountedInput)) return original;
+		return { toolName: mountedToolName, input: mountedInput as Record<string, unknown> };
+	} catch {
+		return original;
+	}
+}
+
 const READ_ONLY_LSP_ACTIONS = new Set([
 	"capabilities",
 	"definition",

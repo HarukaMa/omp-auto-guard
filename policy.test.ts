@@ -12,6 +12,7 @@ import {
 	recentConversation,
 	redactForClassifier,
 	selectClassifierInstructions,
+	unwrapBuiltinXdevCall,
 } from "./policy";
 
 
@@ -77,6 +78,37 @@ describe("tool policy", () => {
 	test("distinguishes read-only and mutating LSP actions", () => {
 		expect(inspectToolCall("lsp", { action: "diagnostics" }).decision).toBe("allow");
 		expect(inspectToolCall("lsp", { action: "rename" }).decision).toBe("classify");
+	});
+
+	test("unwraps only exact OMP builtin virtual-device calls", () => {
+		const recall = unwrapBuiltinXdevCall("write", {
+			path: "xd://recall",
+			content: JSON.stringify({ query: "deployment" }),
+		});
+		expect(recall).toEqual({ toolName: "recall", input: { query: "deployment" } });
+		expect(inspectToolCall(recall.toolName, recall.input).decision).toBe("allow");
+
+		const retain = unwrapBuiltinXdevCall("write", {
+			path: "xd://retain",
+			content: JSON.stringify({ items: [{ content: "fact" }] }),
+		});
+		expect(retain.toolName).toBe("retain");
+		expect(inspectToolCall(retain.toolName, retain.input).decision).toBe("classify");
+
+		const lsp = unwrapBuiltinXdevCall("write", {
+			path: "xd://lsp",
+			content: JSON.stringify({ action: "diagnostics", file: "index.ts" }),
+		});
+		expect(inspectToolCall(lsp.toolName, lsp.input).decision).toBe("allow");
+
+		for (const input of [
+			{ path: "xd://recall?mode=write", content: "{}" },
+			{ path: "xd://custom", content: "{}" },
+			{ path: "xd://recall", content: "not-json" },
+			{ path: "xd://write", content: JSON.stringify({ path: "xd://recall", content: "{}" }) },
+		]) {
+			expect(unwrapBuiltinXdevCall("write", input)).toEqual({ toolName: "write", input });
+		}
 	});
 
 	test("understands database MCP arguments", () => {

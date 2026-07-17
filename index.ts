@@ -21,6 +21,7 @@ import {
 	parseClassifierVerdict,
 	recentConversation as balancedRecentConversation,
 	redactForClassifier,
+	unwrapBuiltinXdevCall,
 	selectClassifierInstructions,
 	type ClassifierVerdict,
 	type ConfiguredEffort,
@@ -714,14 +715,15 @@ export default function autoGuard(pi: ExtensionAPI): void {
 			return undefined;
 		}
 
-		const staticVerdict = inspectToolCall(typedEvent.toolName, typedEvent.input);
+		const classifiedEvent = { ...typedEvent, ...unwrapBuiltinXdevCall(typedEvent.toolName, typedEvent.input) };
+		const staticVerdict = inspectToolCall(classifiedEvent.toolName, classifiedEvent.input);
 		if (staticVerdict.decision !== "classify") {
 			return enforceVerdict(typedEvent, ctx, approvals, approvalEpoch, staticVerdict);
 		}
 
-		ctx.ui.setStatus(STATUS_KEY, `Reviewing ${typedEvent.toolName}`);
+		ctx.ui.setStatus(STATUS_KEY, `Reviewing ${classifiedEvent.toolName}`);
 		try {
-			const classified = await classifyWithModel(typedEvent, ctx, staticVerdict.reason);
+			const classified = await classifyWithModel(classifiedEvent, ctx, staticVerdict.reason);
 			if (ctx.hasPendingMessages()) {
 				clearApprovals();
 				return {
