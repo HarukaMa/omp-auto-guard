@@ -33,9 +33,12 @@ Auto Guard is not a security boundary. It does not isolate tools, constrain the 
 An attacker or failure that can modify OMP, disable extensions, bypass the tool-call event, alter this extension, or execute commands outside OMP is outside this threat model.
 Exact call binding does not snapshot referenced external state. The same path, branch, tag, URL, query selection, or remote name can resolve to different content after approval. Use immutable identifiers and conditional or versioned operations where supported. Treat residual time-of-check/time-of-use risk as outside the guarantees of generic argument binding.
 
+Plan Mode support trusts only the exact core-generated approval and active-plan reference message shapes, not arbitrary developer messages or tool results. The referenced plan is snapshotted before the next tool executes and remains immutable for authorization until another Plan Mode approval. If OMP restarts before Auto Guard captured the plan, no approval-time digest is available; the extension must snapshot the file identified by OMP's active plan reference.
+
 ## Sensitive data
 
 Classifier requests may contain working-directory paths, recent conversation, project/global instructions, and best-effort-redacted tool arguments. The classifier may use a different provider from the main agent. Redaction is not guaranteed to remove every secret.
+Approved Plan Mode snapshots may also be sent to the classifier provider.
 
 Audit logs may contain sensitive tool details and raw classifier output. Context logging is especially sensitive. Store logs with restricted permissions, limit retention, and never commit them.
 Native approval prompts contain a redacted argument summary capped at 512 characters and an agent-supplied, non-authoritative rationale capped at 400 characters. Auto Guard accepts only a non-empty, single-line rationale in the designated option-preview slots, then re-renders and exactly compares every Ask field before display. Long argument values can be abbreviated; reject an approval when the visible summary is insufficient.
