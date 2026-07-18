@@ -158,6 +158,16 @@ describe("tool policy", () => {
 		expect(inspectToolCall("browser", { action: "close" }).decision).toBe("allow");
 		expect(inspectToolCall("browser", { action: "run" }).decision).toBe("classify");
 	});
+
+	test("keeps fact-only and skill-writing learn calls under semantic review", () => {
+		expect(inspectToolCall("learn", { memory: "fact" }).decision).toBe("classify");
+		expect(
+			inspectToolCall("learn", {
+				memory: "fact",
+				skill: { action: "create", name: "example", description: "example", body: "example" },
+			}).decision,
+		).toBe("classify");
+	});
 });
 
 describe("classifier model configuration", () => {

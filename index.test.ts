@@ -346,6 +346,14 @@ describe("classifier authorization policy", () => {
 		expect(CLASSIFIER_PROMPT).toContain("immutable identifiers and tool-supported preconditions");
 	});
 
+	test("limits standing memory authorization to fact-only retention", () => {
+		expect(CLASSIFIER_PROMPT).toContain("or a learn call with no skill payload");
+		expect(CLASSIFIER_PROMPT).toContain("only to retain and fact-only learn");
+		expect(CLASSIFIER_PROMPT).toContain(
+			"A learn call with a skill payload and every manage_skill call remain managed-file mutations requiring current authorization",
+		);
+	});
+
 	test("does not use mere irrelevance as a hard safety denial", () => {
 		expect(CLASSIFIER_PROMPT).toContain("Mere task irrelevance or a low-consequence scope mismatch is never enough to deny");
 		expect(CLASSIFIER_PROMPT).toContain("Task relevance alone is not a safety boundary");
