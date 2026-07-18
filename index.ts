@@ -725,10 +725,12 @@ export default function autoGuard(pi: ExtensionAPI): void {
 		}
 		if (ctx.hasPendingMessages()) {
 			clearApprovals();
-			return {
-				block: true,
-				reason: `OMP Auto Guard paused ${typedEvent.toolName} because queued input or an advisory is pending. Retry only after the agent incorporates it.`,
-			};
+			if (typedEvent.toolName !== "todo") {
+				return {
+					block: true,
+					reason: `OMP Auto Guard paused ${typedEvent.toolName} because queued input or an advisory is pending. Retry only after the agent incorporates it.`,
+				};
+			}
 		}
 		const eventApprovalEpoch = approvalEpoch;
 		const approvedPlan = await currentApprovedPlan(ctx, approvedPlans);

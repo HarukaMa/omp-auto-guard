@@ -745,11 +745,17 @@ describe("native Ask approval retry", () => {
 		expect(extractAskInput(retry).questions[0]?.id).toStartWith("omp-auto-guard:");
 	});
 
-	test("pending input or advice invalidates permits and pauses execution", async () => {
+	test("pending input or advice allows todo but invalidates permits and pauses other tools", async () => {
 		const guard = setupGuard();
 		const call = guardedRead("pending-input-1");
 		await approveHandshake(guard, call, "pending-input-ask-1");
 		guard.setPendingMessages(true);
+
+		const todo = await guard.toolCallHandler(
+			{ toolCallId: "pending-todo-1", toolName: "todo", input: { op: "view" } },
+			guard.context,
+		);
+		expect(todo).toBeUndefined();
 
 		const paused = await guard.toolCallHandler(
 			{ ...call, toolCallId: "pending-input-2" },
