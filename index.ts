@@ -258,6 +258,8 @@ async function classifyWithModel(
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	const startedAt = performance.now();
 	const classifierInstructions = selectClassifierInstructions(ctx.getSystemPrompt());
+	const systemPrompt = [CLASSIFIER_PROMPT, ...classifierInstructions];
+	const promptCacheKey = createHash("sha256").update(JSON.stringify(systemPrompt)).digest("hex");
 	const payload = {
 		workingDirectory: ctx.cwd,
 		classifierTier: tier,
@@ -271,6 +273,7 @@ async function classifyWithModel(
 	let finalVerdict: ClassifierVerdict | undefined;
 	let failure: string | undefined;
 	let invalidResponse: Record<string, unknown> | undefined;
+	let classifierUsage: AssistantMessage["usage"] | undefined;
 
 	try {
 		const apiKey = await ctx.modelRegistry.getApiKey(model);
@@ -281,9 +284,10 @@ async function classifyWithModel(
 		};
 		const response = await complete(
 			model,
-			{ systemPrompt: [CLASSIFIER_PROMPT, ...classifierInstructions], messages: [userMessage] },
-			{ apiKey, signal: controller.signal, temperature: 0, reasoning: effort },
+			{ systemPrompt, messages: [userMessage] },
+			{ apiKey, signal: controller.signal, temperature: 0, reasoning: effort, promptCacheKey },
 		);
+		classifierUsage = response.usage;
 		if (controller.signal.aborted) {
 			failure = `Classifier exceeded ${timeoutMs} ms`;
 			finalVerdict = {
@@ -339,6 +343,7 @@ async function classifyWithModel(
 			staticPolicyObservation: policyReason,
 			rawResponse,
 			invalidResponse,
+			usage: classifierUsage,
 			verdict: finalVerdict,
 			error: failure,
 			input: process.env.OMP_AUTO_GUARD_LOG_INCLUDE_CONTEXT === "1" ? payload : undefined,

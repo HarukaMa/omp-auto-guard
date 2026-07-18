@@ -161,13 +161,14 @@ describe("tool policy", () => {
 
 describe("classifier model configuration", () => {
 	test("uses tier defaults when no classifier model is configured", () => {
-		expect(classifierModelCandidates("fast")).toEqual(["pi/smol", "pi/default"]);
-		expect(classifierModelCandidates("strong")).toEqual(["pi/default"]);
+		expect(classifierModelCandidates("fast")).toEqual(["pi/tiny", "pi/smol", "pi/default"]);
+		expect(classifierModelCandidates("strong")).toEqual(["pi/smol", "pi/default"]);
 	});
 
 	test("prefers a direct classifier model while retaining tier fallbacks", () => {
 		expect(classifierModelCandidates("fast", " openai-codex/gpt-5.6-terra:high ")).toEqual([
 			"openai-codex/gpt-5.6-terra:high",
+			"pi/tiny",
 			"pi/smol",
 			"pi/default",
 		]);

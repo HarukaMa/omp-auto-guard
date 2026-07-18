@@ -41,8 +41,8 @@ export function classifierTier(toolName: string): ClassifierTier {
 }
 
 export function classifierModelCandidates(tier: ClassifierTier, configuredModel?: string): string[] {
-	const fallbackRole = tier === "fast" ? "pi/smol" : "pi/default";
-	return [...new Set([configuredModel?.trim(), fallbackRole, "pi/default"].filter(Boolean) as string[])];
+	const fallbackRoles = tier === "fast" ? ["pi/tiny", "pi/smol", "pi/default"] : ["pi/smol", "pi/default"];
+	return [...new Set([configuredModel?.trim(), ...fallbackRoles].filter(Boolean) as string[])];
 }
 
 export function modelSpecEffort(

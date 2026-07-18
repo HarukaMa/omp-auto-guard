@@ -61,8 +61,8 @@ All configuration is optional.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OMP_AUTO_GUARD_FAST_MODEL` | `pi/smol`, then `pi/default` | Model candidate for fast-tier reviews. |
-| `OMP_AUTO_GUARD_STRONG_MODEL` | `pi/default` | Model candidate for strong-tier reviews. |
+| `OMP_AUTO_GUARD_FAST_MODEL` | `pi/tiny`, then `pi/smol`, then `pi/default` | Model candidate for fast-tier reviews. |
+| `OMP_AUTO_GUARD_STRONG_MODEL` | `pi/smol`, then `pi/default` | Model candidate for strong-tier reviews. |
 | `OMP_AUTO_GUARD_FAST_EFFORT` | `low` | Reasoning effort for fast-tier models that support reasoning. |
 | `OMP_AUTO_GUARD_STRONG_EFFORT` | `medium` | Reasoning effort for strong-tier models that support reasoning. |
 | `OMP_AUTO_GUARD_TIMEOUT_MS` | `12000` | Classifier deadline, clamped to 1000-28000 ms. |
@@ -85,7 +85,7 @@ Model classification can transmit the following to the resolved classifier provi
 
 Redaction is not a reliable data-loss-prevention mechanism. Commands, paths, SQL, conversation text, and model responses may contain sensitive data. Configure classifier providers and credentials accordingly.
 
-When audit logging is enabled, records include the classifier model, effort, latency, tool name, policy observation, raw model response, and verdict. Invalid responses also include stop, usage, error, and content-type diagnostics. `OMP_AUTO_GUARD_LOG_INCLUDE_CONTEXT=1` additionally records the classifier payload and full invalid response content blocks. Protect audit logs as sensitive data and do not commit them.
+When audit logging is enabled, records include the classifier model, effort, latency, normalized token usage, tool name, policy observation, raw model response, and verdict. Invalid responses also include stop, error, and content-type diagnostics. `OMP_AUTO_GUARD_LOG_INCLUDE_CONTEXT=1` additionally records the classifier payload and full invalid response content blocks. Protect audit logs as sensitive data and do not commit them.
 
 ## Security model and limitations
 

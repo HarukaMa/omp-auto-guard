@@ -497,6 +497,64 @@ describe("classifier runtime limits", () => {
 			await Bun.file(logPath).delete();
 		}
 	});
+	test("logs successful usage and reuses a stable prompt cache key", async () => {
+		const guard = setupGuard();
+		const logPath = join(tmpdir(), `omp-auto-guard-${crypto.randomUUID()}.jsonl`);
+		const previousLogPath = process.env.OMP_AUTO_GUARD_LOG_PATH;
+		const cacheKeys: unknown[] = [];
+		const usage = {
+			input: 10,
+			output: 4,
+			cacheRead: 8,
+			cacheWrite: 2,
+			totalTokens: 24,
+			reasoningTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+
+		process.env.OMP_AUTO_GUARD_LOG_PATH = logPath;
+		guard.setModel({ provider: "openai-codex", id: "gpt-5.6-terra", reasoning: true });
+		setCompleteImplementation((...args) => {
+			cacheKeys.push((args[2] as Record<string, unknown>).promptCacheKey);
+			return Promise.resolve({
+				content: [
+					{
+						type: "text",
+						text: '{"decision":"allow","category":"authorized-write","reason":"The requested local write is authorized."}',
+					},
+				],
+				responseId: "successful-response",
+				stopReason: "stop",
+				usage,
+			});
+		});
+
+		try {
+			for (const path of ["C:/workspace/a.txt", "C:/workspace/b.txt"]) {
+				expect(
+					await guard.toolCallHandler(
+						{ toolCallId: `write-${path}`, toolName: "write", input: { path, content: path } },
+						guard.context,
+					),
+				).toBeUndefined();
+			}
+			expect(cacheKeys).toHaveLength(2);
+			expect(cacheKeys[0]).toMatch(/^[0-9a-f]{64}$/);
+			expect(cacheKeys[1]).toBe(cacheKeys[0]);
+			const records = (await Bun.file(logPath).text())
+				.trim()
+				.split("\n")
+				.map(line => JSON.parse(line));
+			expect(records).toHaveLength(2);
+			expect(records.every(record => JSON.stringify(record.usage) === JSON.stringify(usage))).toBe(true);
+		} finally {
+			setCompleteImplementation();
+			if (previousLogPath === undefined) delete process.env.OMP_AUTO_GUARD_LOG_PATH;
+			else process.env.OMP_AUTO_GUARD_LOG_PATH = previousLogPath;
+			await Bun.file(logPath).delete();
+		}
+	});
+
 });
 
 describe("builtin virtual-device routing", () => {
