@@ -550,7 +550,7 @@ export function approvedPlanReference(entries: readonly unknown[]): ApprovedPlan
 	return undefined;
 }
 
-const APPROVAL_REFERENCE_PATTERN = /(?:^|\b)(?:approv(?:e|ed|al)|authoriz(?:e|ed|ation)|plan[- ]batch|proceed|go ahead|do it|continue|execute|ship it|let'?s do (?:it|this))(?:\b|$)/i;
+const APPROVAL_REFERENCE_PATTERN = /(?:^|\b)(?:approv(?:e|ed|al)|authoriz(?:e|ed|ation)|plan[- ]batch|lgtm|proceed|go ahead|do it|continue|execute|ship it|let'?s do (?:it|this))(?:\b|$)/i;
 
 type ConversationCandidate = ConversationExcerpt & {
 	index: number;

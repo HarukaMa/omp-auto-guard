@@ -333,6 +333,29 @@ describe("classifier conversation context", () => {
 		expect(selected.reduce((sum, message) => sum + message.text.length, 0)).toBeLessThanOrEqual(12000);
 	});
 
+	test("recognizes lgtm and prioritizes its long inline plan over older approvals", () => {
+		const entry = (role: "user" | "assistant", text: string) => ({
+			type: "message",
+			message: { role, content: [{ type: "text", text }] },
+		});
+		const inlinePlan =
+			`Implementation plan: ${"p".repeat(6700)}` +
+			` Add HyperliquidClient.schedule_cancel() and test it. ${"q".repeat(1200)}`;
+		const olderApprovals = Array.from({ length: 4 }, (_, index) => [
+			entry("assistant", `Older approved plan ${index}: ${"o".repeat(1475)}`),
+			entry("user", "Approved."),
+		]).flat();
+		const selected = recentConversation([
+			...olderApprovals,
+			entry("assistant", inlinePlan),
+			entry("user", "lgtm"),
+			...Array.from({ length: 10 }, (_, index) => entry("assistant", `Later output ${index}`)),
+		]);
+
+		expect(selected.find(message => message.text === "lgtm")?.authoritative).toBe(true);
+		expect(selected.some(message => message.text.includes("HyperliquidClient.schedule_cancel()"))).toBe(true);
+	});
+
 
 	test("preserves a matched Ask question and real user selection", () => {
 		const toolCallId = "ask-deploy-1";
