@@ -334,13 +334,14 @@ describe("classifier authorization policy", () => {
 	});
 
 	test("still requires semantic review and explicit authorization for side effects", () => {
-		expect(CLASSIFIER_PROMPT).toContain("Authoritative user excerpts and an approvedPlan snapshot are evidence");
+		expect(CLASSIFIER_PROMPT).toContain("approvedPlan baseline snapshot, and approvedAmendments");
 		expect(CLASSIFIER_PROMPT).toContain("Inspect the complete command and its arguments for side effects");
 		expect(CLASSIFIER_PROMPT).toContain("genuinely unclear whether a shell command writes state");
 		expect(CLASSIFIER_PROMPT).toContain("specific material risk that is not already covered");
 		expect(CLASSIFIER_PROMPT).toContain("explicitly requests or approves that operation");
 		expect(CLASSIFIER_PROMPT).toContain("Merely mentioning, discussing, or asking about a possible mutation does not authorize it");
 		expect(CLASSIFIER_PROMPT).toContain("do not ask again for individual deployment, restart, migration, remote-write");
+		expect(CLASSIFIER_PROMPT).toContain("additions to the baseline scope");
 		expect(CLASSIFIER_PROMPT).toContain("production/shared mutations require");
 		expect(CLASSIFIER_PROMPT).toContain("immutable identifiers and tool-supported preconditions");
 	});
@@ -384,6 +385,45 @@ describe("approved Plan Mode context", () => {
 				),
 			).toBeUndefined();
 			expect(payloads[0]?.approvedPlan).toEqual({ path: planPath, content: approvedContent });
+		} finally {
+			setCompleteImplementation();
+			await rm(guard.artifactsDir, { recursive: true, force: true });
+		}
+	});
+
+	test("sends later user-approved inline plans as additive amendments", async () => {
+		const guard = setupGuard();
+		const planPath = "local://eth-testnet-price-tether-plan.md";
+		const approvedContent = "Implement hl/price_tether.py in the experimental worktree.";
+		const amendment = "Add hl/order_pressure.py and HyperliquidClient.schedule_cancel().";
+		const payloads: Record<string, unknown>[] = [];
+		await mkdir(join(guard.artifactsDir, "local"), { recursive: true });
+		await Bun.write(join(guard.artifactsDir, "local", "eth-testnet-price-tether-plan.md"), approvedContent);
+		guard.setBranch([
+			approvedPlanEntry(planPath),
+			{
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text: amendment }] },
+			},
+			{
+				type: "message",
+				message: { role: "user", attribution: "user", content: [{ type: "text", text: "lgtm" }] },
+			},
+		]);
+		guard.setModel({ provider: "openai-codex", id: "gpt-5.6-sol", reasoning: true });
+		installAllowingClassifier(payloads);
+
+		try {
+			await guard.toolCallHandler(
+				{
+					toolCallId: "amended-write",
+					toolName: "write",
+					input: { path: "C:/workspace/hl/order_pressure.py", content: "pass" },
+				},
+				guard.context,
+			);
+			expect(payloads[0]?.approvedPlan).toEqual({ path: planPath, content: approvedContent });
+			expect(payloads[0]?.approvedAmendments).toEqual([{ approval: "lgtm", content: amendment }]);
 		} finally {
 			setCompleteImplementation();
 			await rm(guard.artifactsDir, { recursive: true, force: true });

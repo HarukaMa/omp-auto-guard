@@ -47,7 +47,7 @@ Classifier failures, invalid responses, unavailable models, oversized inputs, an
 
 Approval identity is a SHA-256 digest over the approval epoch, working directory, tool name, and canonicalized arguments. A permit is single-use, expires five minutes after approval is recorded (not five minutes after the Ask is issued), and is invalidated by lifecycle changes, working-directory changes, or queued input or advice. Rejecting, timing out, redirecting to chat, entering custom Ask text, or changing protected Ask fields does not authorize the call.
 
-OMP Plan Mode approval is recognized only from the exact core-generated approval or active-plan reference message. Auto Guard snapshots the referenced `local://` plan before the next tool executes and supplies the complete snapshot, up to 128 KiB, as scoped classifier authority. Later plan-file edits do not expand authorization; a new Plan Mode approval is required. Missing, unreadable, malformed, or oversized plans grant no authority.
+OMP Plan Mode approval is recognized only from the exact core-generated approval or active-plan reference message. Auto Guard snapshots the referenced `local://` plan before the next tool executes and supplies the complete snapshot, up to 128 KiB, as the immutable baseline authority. Later authoritative user approvals of concrete inline assistant plans are supplied as bounded, immutable amendments whose explicit scope is additive. Assistant text never self-authorizes, later user restrictions take precedence, and later plan-file edits do not expand authorization. Missing, unreadable, malformed, or oversized plans grant no baseline authority.
 
 The Ask template shows a short fingerprint and a redacted argument summary capped at 512 characters. Before calling Ask, the agent must replace the designated preview placeholder with the same non-empty, single-line rationale in both options; the rationale is capped at 400 characters and remains explicitly non-authoritative. Auto Guard re-renders the complete expected input from its own template and the validated rationale before exact comparison. The full call digest remains internal.
 
@@ -79,6 +79,7 @@ Model classification can transmit the following to the resolved classifier provi
 - Working-directory path
 - Selected recent user and assistant conversation
 - Immutable approved Plan Mode content, when active
+- Bounded inline plan amendments paired with later authoritative user approvals
 - Project and global instructions extracted from the OMP system prompt
 - Tool name and best-effort-redacted arguments
 - Static policy observation

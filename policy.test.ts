@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	MAX_CLASSIFIER_INPUT_BYTES,
 	approvedPlanReference,
+	approvedPlanAmendments,
 	classifierInputBytes,
 	classifierModelCandidates,
 	classifierTier,
@@ -271,6 +272,53 @@ describe("approved Plan Mode references", () => {
 		expect(preserved).toEqual({ markerId: "approval-2", path, kind: "approval" });
 		expect(approval).toEqual({ markerId: "approval-1", path, kind: "approval" });
 		expect(reference).toEqual({ markerId: "reference-1", path, kind: "reference" });
+	});
+
+	test("keeps later inline approvals as bounded amendments across Plan Mode references", () => {
+		const message = (role: "user" | "assistant", text: string) => ({
+			type: "message",
+			message: { role, content: [{ type: "text", text }] },
+		});
+		const baseline = {
+			type: "message",
+			id: "baseline-approval",
+			message: {
+				role: "developer",
+				attribution: "agent",
+				content: [{ type: "text", text: approvedPrompt }],
+			},
+		};
+		const reference = {
+			type: "custom_message",
+			id: "baseline-reference",
+			customType: "plan-mode-reference",
+			attribution: "agent",
+			content: referencePrompt,
+		};
+		const longAmendment =
+			`Sell-wall amendment: ${"p".repeat(6700)}` +
+			` Add HyperliquidClient.schedule_cancel() and test it. ${"q".repeat(1200)}`;
+		const entries = [
+			message("assistant", "This approval predates the baseline."),
+			message("user", "lgtm"),
+			baseline,
+			message("assistant", "Add hl/order_pressure.py as a dry-run-first module."),
+			message("user", "lgtm"),
+			message("assistant", longAmendment),
+			message("user", "Approved."),
+			reference,
+		];
+
+		const amendments = approvedPlanAmendments(entries);
+		expect(amendments).toHaveLength(2);
+		expect(amendments[0]?.approval).toBe("Approved.");
+		expect(amendments[0]?.content).toContain("HyperliquidClient.schedule_cancel()");
+		expect(amendments[0]?.content).toHaveLength(3000);
+		expect(amendments[1]).toEqual({
+			approval: "lgtm",
+			content: "Add hl/order_pressure.py as a dry-run-first module.",
+		});
+		expect(approvedPlanAmendments([...entries, { ...baseline, id: "new-baseline-approval" }])).toEqual([]);
 	});
 
 	test("rejects developer and tool-result lookalikes", () => {

@@ -20,6 +20,11 @@ export interface ConversationExcerpt {
 	text: string;
 }
 
+export interface ApprovedPlanAmendment {
+	approval: string;
+	content: string;
+}
+
 export interface ApprovedPlanReference {
 	markerId: string;
 	path: string;
@@ -515,8 +520,11 @@ function formatAskResponse(answer: AskAnswerContext): string {
 const APPROVED_PLAN_PROMPT = /^Plan approved\.\n(?:- Context preserved\. Use conversation history when useful; the plan file is the source of truth if it conflicts with earlier exploration\.\n)?\n<instruction>\nYou MUST read `(local:\/\/[^`\r\n]+)` before executing\.\nThe file content is the authoritative plan; visible\/compressed context is secondary\.\nRead failure\? Report the exact path and error instead of guessing\.\nAfter reading, you MUST execute the plan step by step with full tool access\.\nYou MUST verify each step before proceeding to the next\.\n(?:After reading the plan, initialize todo tracking with `todo`\.\nAfter each completed step, immediately update `todo`\.\nIf `todo` fails, fix the payload and retry before continuing\.\n)?<\/instruction>\n\n<critical>\nNEVER stop because inline plan content is compressed, expired, or unrecoverable\. Read `\1`\.\nYou MUST keep going until complete\. This matters\.\n<\/critical>\n?$/;
 const APPROVED_PLAN_REFERENCE_PROMPT = /^## Existing Plan\n\nThe approved plan file is at `(local:\/\/[^`\r\n]+)`\.\n\n<instruction>\nIf this plan is relevant to current work and not complete, you MUST continue executing it\.\nIf you do not have the current plan content in visible context, you MUST read `\1`\.\nIf the plan is stale or unrelated, you MUST ignore it\.\nNEVER stop because inline plan content is compressed, expired, or unrecoverable\. Read the file\.\n<\/instruction>\n?$/;
 
-export function approvedPlanReference(entries: readonly unknown[]): ApprovedPlanReference | undefined {
-	for (let index = entries.length - 1; index >= 0; index--) {
+type IndexedApprovedPlanReference = ApprovedPlanReference & { index: number };
+
+function indexedApprovedPlanReferences(entries: readonly unknown[]): IndexedApprovedPlanReference[] {
+	const references: IndexedApprovedPlanReference[] = [];
+	for (let index = 0; index < entries.length; index++) {
 		const entry = entries[index];
 		if (!entry || typeof entry !== "object") continue;
 		const record = entry as Record<string, unknown>;
@@ -533,7 +541,7 @@ export function approvedPlanReference(entries: readonly unknown[]): ApprovedPlan
 			const content = item as Record<string, unknown>;
 			if (content.type !== "text" || typeof content.text !== "string") continue;
 			const match = content.text.match(APPROVED_PLAN_PROMPT);
-			if (match?.[1]) return { markerId: record.id, path: match[1], kind: "approval" };
+			if (match?.[1]) references.push({ markerId: record.id, path: match[1], kind: "approval", index });
 			continue;
 		}
 
@@ -544,10 +552,17 @@ export function approvedPlanReference(entries: readonly unknown[]): ApprovedPlan
 			typeof record.content === "string"
 		) {
 			const match = record.content.match(APPROVED_PLAN_REFERENCE_PROMPT);
-			if (match?.[1]) return { markerId: record.id, path: match[1], kind: "reference" };
+			if (match?.[1]) references.push({ markerId: record.id, path: match[1], kind: "reference", index });
 		}
 	}
-	return undefined;
+	return references;
+}
+
+export function approvedPlanReference(entries: readonly unknown[]): ApprovedPlanReference | undefined {
+	const reference = indexedApprovedPlanReferences(entries).at(-1);
+	return reference
+		? { markerId: reference.markerId, path: reference.path, kind: reference.kind }
+		: undefined;
 }
 
 const APPROVAL_REFERENCE_PATTERN = /(?:^|\b)(?:approv(?:e|ed|al)|authoriz(?:e|ed|ation)|plan[- ]batch|lgtm|proceed|go ahead|do it|continue|execute|ship it|let'?s do (?:it|this))(?:\b|$)/i;
@@ -556,6 +571,79 @@ type ConversationCandidate = ConversationExcerpt & {
 	index: number;
 	pairedAssistantIndex?: number;
 };
+
+function truncateExcerpt(text: string, limit: number): string {
+	if (limit <= 0) return "";
+	if (text.length <= limit) return text;
+	const marker = "\n...[TRUNCATED]...\n";
+	if (limit <= marker.length + 2) return text.slice(-limit);
+	const available = limit - marker.length;
+	const headLength = Math.ceil(available / 2);
+	return `${text.slice(0, headLength)}${marker}${text.slice(-(available - headLength))}`;
+}
+
+function plainMessageText(message: Record<string, unknown>): string {
+	if (!Array.isArray(message.content)) return "";
+	return message.content
+		.filter(item => item && typeof item === "object" && (item as Record<string, unknown>).type === "text")
+		.map(item => String((item as Record<string, unknown>).text ?? ""))
+		.join("\n")
+		.trim();
+}
+
+export function approvedPlanAmendments(entries: readonly unknown[]): ApprovedPlanAmendment[] {
+	const references = indexedApprovedPlanReferences(entries);
+	const currentReference = references.at(-1);
+	let baselineIndex = currentReference?.index ?? -1;
+	if (currentReference?.kind === "reference") {
+		for (let index = references.length - 1; index >= 0; index--) {
+			const reference = references[index]!;
+			if (
+				reference.index <= currentReference.index &&
+				reference.kind === "approval" &&
+				reference.path === currentReference.path
+			) {
+				baselineIndex = reference.index;
+				break;
+			}
+		}
+	}
+
+	const assistantMessages: Array<{ index: number; text: string }> = [];
+	const pairs: Array<{ approval: string; content: string; assistantIndex: number }> = [];
+	const pairedAssistants = new Set<number>();
+	for (let index = baselineIndex + 1; index < entries.length; index++) {
+		const entry = entries[index];
+		if (!entry || typeof entry !== "object") continue;
+		const record = entry as Record<string, unknown>;
+		if (record.type !== "message" || !record.message || typeof record.message !== "object") continue;
+		const message = record.message as Record<string, unknown>;
+		const text = plainMessageText(message);
+		if (!text) continue;
+		if (message.role === "assistant") {
+			assistantMessages.push({ index, text });
+			continue;
+		}
+		if (message.role !== "user" || message.synthetic === true || !APPROVAL_REFERENCE_PATTERN.test(text)) continue;
+		const assistant = assistantMessages.at(-1);
+		if (!assistant || pairedAssistants.has(assistant.index)) continue;
+		pairs.push({ approval: text, content: assistant.text, assistantIndex: assistant.index });
+		pairedAssistants.add(assistant.index);
+	}
+
+	const amendments: ApprovedPlanAmendment[] = [];
+	let remainingCharacters = 6000;
+	for (const pair of pairs.reverse()) {
+		if (amendments.length >= 4 || remainingCharacters <= 0) break;
+		const approval = truncateExcerpt(pair.approval, Math.min(1000, remainingCharacters));
+		remainingCharacters -= approval.length;
+		const content = truncateExcerpt(pair.content, Math.min(3000, remainingCharacters));
+		if (!content) break;
+		remainingCharacters -= content.length;
+		amendments.push({ approval, content });
+	}
+	return amendments;
+}
 
 export function recentConversation(entries: readonly unknown[]): ConversationExcerpt[] {
 	const candidates: ConversationCandidate[] = [];
@@ -629,17 +717,7 @@ export function recentConversation(entries: readonly unknown[]): ConversationExc
 			if (remainingCharacters <= 0 || remainingMessages <= 0) break;
 			if (selectedIndices.has(candidate.index)) continue;
 			const limit = Math.min(3000, remainingCharacters);
-			let text = candidate.text;
-			if (text.length > limit) {
-				const marker = "\n...[TRUNCATED]...\n";
-				if (limit <= marker.length + 2) {
-					text = text.slice(-limit);
-				} else {
-					const available = limit - marker.length;
-					const headLength = Math.ceil(available / 2);
-					text = `${text.slice(0, headLength)}${marker}${text.slice(-(available - headLength))}`;
-				}
-			}
+			const text = truncateExcerpt(candidate.text, limit);
 			selected.push({ ...candidate, text });
 			selectedIndices.add(candidate.index);
 			remainingCharacters -= text.length;
