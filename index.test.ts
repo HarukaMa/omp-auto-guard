@@ -43,6 +43,7 @@ interface AskInput {
 
 type ToolCallHandler = (event: ToolCall, context: unknown) => Promise<ToolCallResult | undefined>;
 type ToolResultHandler = (event: ToolResult) => ToolResultUpdate | undefined | Promise<ToolResultUpdate | undefined>;
+type TurnEndHandler = (event: { toolResults: Array<{ toolName: string; isError: boolean }> }) => void;
 
 const ASK_INPUT_MARKER = "Native Ask input (use exactly after replacing the rationale placeholder):\n";
 const RATIONALE_PREFIX = "Agent rationale (non-authoritative):\n";
@@ -59,9 +60,11 @@ const APPROVAL_CLEAR_EVENTS = [
 function setupGuard(hasUI = true) {
 	let toolCallHandler: ToolCallHandler | undefined;
 	let toolResultHandler: ToolResultHandler | undefined;
+	let turnEndHandler: TurnEndHandler | undefined;
 	const sessionHandlers = new Map<string, () => void>();
 	let confirmCalls = 0;
 	let sendMessageCalls = 0;
+	let lastSentMessage: { message: unknown; options: unknown } | undefined;
 	let pendingMessages = false;
 	let branch: unknown[] = [];
 	const artifactsDir = join(tmpdir(), `omp-auto-guard-${crypto.randomUUID()}`);
@@ -71,12 +74,14 @@ function setupGuard(hasUI = true) {
 		on(event: string, handler: unknown) {
 			if (event === "tool_call") toolCallHandler = handler as ToolCallHandler;
 			if (event === "tool_result") toolResultHandler = handler as ToolResultHandler;
+			if (event === "turn_end") turnEndHandler = handler as TurnEndHandler;
 			if ((APPROVAL_CLEAR_EVENTS as readonly string[]).includes(event)) {
 				sessionHandlers.set(event, handler as () => void);
 			}
 		},
-		sendMessage() {
+		sendMessage(message: unknown, options: unknown) {
 			sendMessageCalls += 1;
+			lastSentMessage = { message, options };
 		},
 	};
 	const context = {
@@ -124,6 +129,7 @@ function setupGuard(hasUI = true) {
 	autoGuard(pi as never);
 	if (!toolCallHandler) throw new Error("tool_call handler was not registered");
 	if (!toolResultHandler) throw new Error("tool_result handler was not registered");
+	if (!turnEndHandler) throw new Error("turn_end handler was not registered");
 	for (const event of APPROVAL_CLEAR_EVENTS) {
 		if (!sessionHandlers.has(event)) throw new Error(`${event} handler was not registered`);
 	}
@@ -135,6 +141,9 @@ function setupGuard(hasUI = true) {
 		},
 		get sendMessageCalls() {
 			return sendMessageCalls;
+		},
+		get lastSentMessage() {
+			return lastSentMessage;
 		},
 		setPendingMessages(value: boolean) {
 			pendingMessages = value;
@@ -151,6 +160,7 @@ function setupGuard(hasUI = true) {
 		sessionHandlers,
 		toolCallHandler,
 		toolResultHandler,
+		turnEndHandler,
 	};
 }
 
@@ -828,6 +838,23 @@ describe("native Ask approval retry", () => {
 			guard.context,
 		);
 		expect(retry?.block).toBe(true);
+	});
+	test("schedules a hidden continuation after a Todo error turn", () => {
+		const guard = setupGuard();
+
+		guard.turnEndHandler({ toolResults: [{ toolName: "todo", isError: true }] });
+		expect(guard.sendMessageCalls).toBe(1);
+		expect(guard.lastSentMessage).toEqual({
+			message: {
+				customType: "omp-auto-guard-todo-error-continuation",
+				content: "Consume the queued Todo error reminder. Correct Todo only if still needed; otherwise do not call another tool.",
+				display: false,
+			},
+			options: { deliverAs: "nextTurn", triggerTurn: true },
+		});
+
+		guard.turnEndHandler({ toolResults: [{ toolName: "todo", isError: false }] });
+		expect(guard.sendMessageCalls).toBe(1);
 	});
 	test("discards an in-flight classifier result when user input arrives", async () => {
 		const guard = setupGuard();

@@ -793,6 +793,19 @@ export default function autoGuard(pi: ExtensionAPI): void {
 		}
 	});
 
+	pi.on("turn_end", event => {
+		if (!event.toolResults.some(result => result.toolName === "todo" && result.isError)) return;
+		// Core queues its Todo error reminder before turn_end but does not schedule delivery.
+		pi.sendMessage(
+			{
+				customType: "omp-auto-guard-todo-error-continuation",
+				content: "Consume the queued Todo error reminder. Correct Todo only if still needed; otherwise do not call another tool.",
+				display: false,
+			},
+			{ deliverAs: "nextTurn", triggerTurn: true },
+		);
+	});
+
 	pi.on("tool_result", event => {
 		if (event.toolName !== "ask") return undefined;
 		const typedEvent: ToolResultEvent = {
