@@ -37,7 +37,7 @@ Plan Mode support trusts only the exact core-generated approval and active-plan 
 
 ## Sensitive data
 
-Classifier requests may contain working-directory paths, recent conversation, project/global instructions, and best-effort-redacted tool arguments. The classifier may use a different provider from the main agent. Redaction is not guaranteed to remove every secret.
+Classifier requests may contain working-directory paths, recent conversation, up to 8,000 characters of best-effort-redacted recent non-Ask tool results, project/global instructions, and best-effort-redacted tool arguments. The classifier may use a different provider from the main agent. Redaction is not guaranteed to remove every secret.
 Approved Plan Mode snapshots and approved inline amendments may also be sent to the classifier provider.
 
 Audit logs may contain sensitive tool details and raw classifier output. Context logging is especially sensitive. Store logs with restricted permissions, limit retention, and never commit them.

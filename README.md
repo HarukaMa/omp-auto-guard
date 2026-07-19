@@ -80,6 +80,7 @@ Model classification can transmit the following to the resolved classifier provi
 
 - Working-directory path
 - Selected recent user and assistant conversation
+- Up to 16 recent non-Ask tool results, best-effort-redacted and limited to 500 characters each
 - Immutable approved Plan Mode content, when active
 - Bounded inline plan amendments paired with later authoritative user approvals
 - Project and global instructions extracted from the OMP system prompt

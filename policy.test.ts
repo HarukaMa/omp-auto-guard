@@ -12,6 +12,7 @@ import {
 	modelSpecEffort,
 	parseClassifierVerdict,
 	recentConversation,
+	recentTechnicalContext,
 	redactForClassifier,
 	selectClassifierInstructions,
 	unwrapBuiltinXdevCall,
@@ -563,6 +564,34 @@ describe("classifier conversation context", () => {
 		expect(held.some(message => message.text.startsWith("Ask UI question:"))).toBe(true);
 		expect(held.find(message => message.text.startsWith("Ask UI user response:"))?.authoritative).toBe(true);
 		expect(timedOut.find(message => message.text.includes("auto-selection"))?.authoritative).toBe(false);
+	});
+
+	test("keeps bounded redacted tool evidence separate from Ask authority", () => {
+		const result = (toolName: string, text: string, isError = false) => ({
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolName,
+				isError,
+				content: [{ type: "text", text }],
+			},
+		});
+		const selected = recentTechnicalContext([
+			...Array.from({ length: 20 }, (_, index) =>
+				result("bash", `result ${index}: ${"x".repeat(600)}`),
+			),
+			result("ask", "User selected: Approve deployment"),
+			result("bash", "password=supersecret\nall six remotes recovered", true),
+		]);
+
+		expect(selected).toHaveLength(16);
+		expect(selected[0]?.text).toContain("result 5");
+		expect(selected.at(-1)).toMatchObject({ toolName: "bash", isError: true });
+		expect(selected.at(-1)?.text).toContain("password=[REDACTED]");
+		expect(selected.some(item => item.text.includes("supersecret"))).toBe(false);
+		expect(selected.some(item => item.text.includes("User selected"))).toBe(false);
+		expect(selected.every(item => item.text.length <= 500)).toBe(true);
+		expect(selected.reduce((sum, item) => sum + item.text.length, 0)).toBeLessThanOrEqual(8000);
 	});
 });
 

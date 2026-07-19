@@ -20,6 +20,12 @@ export interface ConversationExcerpt {
 	text: string;
 }
 
+export interface TechnicalExcerpt {
+	toolName: string;
+	isError: boolean;
+	text: string;
+}
+
 export interface ApprovedPlanAmendment {
 	approval: string;
 	content: string;
@@ -578,6 +584,33 @@ export function recentConversation(entries: readonly unknown[]): ConversationExc
 	return selected
 		.sort((left, right) => left.index - right.index)
 		.map(({ role, authoritative, text }) => ({ role, authoritative, text }));
+}
+
+export function recentTechnicalContext(entries: readonly unknown[]): TechnicalExcerpt[] {
+	const selected: Array<TechnicalExcerpt & { index: number }> = [];
+	let remainingCharacters = 8000;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		if (selected.length >= 16 || remainingCharacters <= 0) break;
+		const entry = entries[index];
+		if (!entry || typeof entry !== "object") continue;
+		const record = entry as Record<string, unknown>;
+		if (record.type !== "message" || !record.message || typeof record.message !== "object") continue;
+		const message = record.message as Record<string, unknown>;
+		if (message.role !== "toolResult" || message.toolName === "ask" || typeof message.toolName !== "string") continue;
+		const text = plainMessageText(message);
+		if (!text) continue;
+		const excerpt = truncateExcerpt(String(redactForClassifier(text)), Math.min(500, remainingCharacters));
+		selected.push({
+			index,
+			toolName: message.toolName,
+			isError: message.isError === true,
+			text: excerpt,
+		});
+		remainingCharacters -= excerpt.length;
+	}
+	return selected
+		.reverse()
+		.map(({ toolName, isError, text }) => ({ toolName, isError, text }));
 }
 
 function taggedSection(text: string, tag: string): string | undefined {
