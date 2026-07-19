@@ -49,11 +49,13 @@ Approval identity is a SHA-256 digest over the approval epoch, working directory
 
 OMP Plan Mode approval is recognized only from the exact core-generated approval or active-plan reference message. Auto Guard snapshots the referenced `local://` plan before the next tool executes and supplies the complete snapshot, up to 128 KiB, as the immutable baseline authority. Later authoritative user approvals of concrete inline assistant plans are supplied as bounded, immutable amendments whose explicit scope is additive. Assistant text never self-authorizes, later user restrictions take precedence, and later plan-file edits do not expand authorization. Missing, unreadable, malformed, or oversized plans grant no baseline authority.
 
-The Ask template shows a short fingerprint and a redacted argument summary capped at 512 characters. Before calling Ask, the agent must replace the designated preview placeholder with the same non-empty, single-line rationale in both options; the rationale is capped at 400 characters and remains explicitly non-authoritative. Auto Guard re-renders the complete expected input from its own template and the validated rationale before exact comparison. The full call digest remains internal.
+The Ask template shows a short fingerprint and, for ordinary calls, a redacted argument summary capped at 512 characters. Database calls instead show the complete redacted classifier input when it fits the 128 KiB classifier limit, preserving multiline SQL for inspection. Before calling Ask, the agent must replace the designated preview placeholder with the same non-empty, single-line rationale in both options; the rationale is capped at 400 characters and remains explicitly non-authoritative. Auto Guard re-renders the complete expected input from its own template and the validated rationale before exact comparison. The full call digest remains internal.
 
 Exact arguments do not freeze resources referenced by those arguments. A path, branch, tag, URL, database selection, or remote name may resolve to different state between approval and execution. Prefer immutable identifiers and tool-supported preconditions, such as commit SHAs, object versions, expected revisions, and conditional writes. Auto Guard cannot generically eliminate this time-of-check/time-of-use risk.
 
 Tool arguments are classified in full after best-effort secret redaction. Inputs above 128 KiB are not classified from a partial representation; they require approval instead.
+
+Database operations always use the strong classifier tier with the complete redacted tool arguments. Auto Guard does not split SQL or attempt dialect-independent parsing of comments, literals, or statements. Suspicious raw keywords such as `DROP`, `TRUNCATE`, and `FLUSHALL` are supplied as classifier observations, not treated as proof that the text is executable.
 
 ## Configuration
 
@@ -101,8 +103,8 @@ Auto Guard is intended to reduce accidental high-consequence actions by a cooper
 - Users approving a harmful operation
 - Mutable resources changing after approval while the exact tool arguments remain unchanged
 
-Deterministic shell and SQL patterns are defense in depth, not complete parsers. Ambiguous operations should be routed to semantic review rather than treated as proven safe.
-Approval summaries deliberately limit conversation growth and may abbreviate long values. Review the visible effect-bearing fields and reject the call when the summary is insufficient to make an informed decision.
+Deterministic shell patterns remain defense in depth, not complete parsers. SQL is routed to dialect-aware semantic review instead of being treated as statically proven safe.
+Ordinary approval summaries deliberately limit conversation growth and may abbreviate long values. Database approvals show the complete redacted classifier input when it fits the classifier limit. Reject the call whenever the displayed information is insufficient for an informed decision.
 
 See [SECURITY.md](SECURITY.md) for reporting and threat-model details.
 

@@ -41,7 +41,7 @@ Classifier requests may contain working-directory paths, recent conversation, pr
 Approved Plan Mode snapshots and approved inline amendments may also be sent to the classifier provider.
 
 Audit logs may contain sensitive tool details and raw classifier output. Context logging is especially sensitive. Store logs with restricted permissions, limit retention, and never commit them.
-Native approval prompts contain a redacted argument summary capped at 512 characters and an agent-supplied, non-authoritative rationale capped at 400 characters. Auto Guard accepts only a non-empty, single-line rationale in the designated option-preview slots, then re-renders and exactly compares every Ask field before display. Long argument values can be abbreviated; reject an approval when the visible summary is insufficient.
+Native approval prompts contain an agent-supplied, non-authoritative rationale capped at 400 characters. Ordinary calls show a redacted argument summary capped at 512 characters; database calls show the complete redacted classifier input when it fits the 128 KiB classifier limit so multiline SQL remains inspectable. Auto Guard accepts only a non-empty, single-line rationale in the designated option-preview slots, then re-renders and exactly compares every Ask field before display. Reject an approval when the visible information is insufficient.
 
 ## Operational guidance
 
@@ -50,3 +50,4 @@ Native approval prompts contain a redacted argument summary capped at 512 charac
 - Review deployments, database changes, permission changes, and credential operations.
 - Restart OMP after updating the extension; existing sessions do not hot-reload it.
 - Treat classifier `allow` as one defense-in-depth signal, not proof that an operation is safe.
+- Database SQL is reviewed as complete model input rather than split or parsed by a dialect-independent static lexer. Raw destructive keywords only focus classifier attention and do not establish whether text is executable, quoted, or commented.

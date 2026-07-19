@@ -152,40 +152,14 @@ const CATASTROPHIC_SHELL_PATTERNS: readonly [RegExp, string][] = [
 	[/\b(?:curl|wget)\b[^\n|;&]*(?:\||&&|;)\s*(?:sudo\s+)?(?:bash|sh|zsh|pwsh|powershell)\b/i, "remote content executed directly by a shell"],
 ];
 
-const CATASTROPHIC_DATABASE_PATTERNS: readonly [RegExp, string][] = [
-	[/\bdrop\s+database\b/i, "dropping a database"],
-	[/\bdrop\s+schema\b[^;]*\bcascade\b/i, "dropping a schema with cascade"],
-	[/\bflushall\b/i, "flushing every Redis database"],
-	[/\bdb\s*\.\s*dropDatabase\s*\(/i, "dropping a MongoDB database"],
+const SUSPICIOUS_DATABASE_PATTERNS: readonly [RegExp, string][] = [
+	[/\bdrop\b/i, "DROP"],
+	[/\btruncate\b/i, "TRUNCATE"],
+	[/\bflushall\b/i, "FLUSHALL"],
+	[/\bdb\s*\.\s*dropDatabase\s*\(/i, "db.dropDatabase()"],
 ];
 
-const MUTATING_DATABASE_PATTERN = /\b(?:alter|analyze|attach|cluster|comment\s+on|copy|create|delete|detach|drop|grant|insert|merge|reindex|replace|restore|revoke|truncate|update|upsert|vacuum\s+full)\b/i;
-const READ_SHAPED_MUTATION_PATTERN = /\b(?:into|for\s+(?:key\s+)?share|skip\s+locked)\b/i;
-const DANGEROUS_SELECT_FUNCTION = /\b(?:dblink_exec|lo_unlink|pg_cancel_backend|pg_reload_conf|pg_rotate_logfile|pg_terminate_backend|set_config)\s*\(/i;
 const SQL_ARGUMENT_KEY = /^(?:command|query|queryText|sql|statement)$/i;
-const SQL_PAREN_KEYWORD: Record<string, true> = {
-	and: true,
-	as: true,
-	by: true,
-	case: true,
-	else: true,
-	end: true,
-	exists: true,
-	filter: true,
-	from: true,
-	having: true,
-	in: true,
-	join: true,
-	not: true,
-	on: true,
-	or: true,
-	over: true,
-	select: true,
-	then: true,
-	values: true,
-	when: true,
-	where: true,
-};
 const REDACTED_KEY = /(?:authorization|cookie|credential|password|private.?key|secret|token|api.?key)/i;
 export const MAX_CLASSIFIER_INPUT_BYTES = 128 * 1024;
 
@@ -219,141 +193,18 @@ function namedStrings(value: unknown, keyPattern: RegExp, output: string[]): voi
 	}
 }
 
-function hasSqlFunctionCall(sql: string): boolean {
-	for (const match of sql.matchAll(/\b((?:[a-z_][\w$]*\s*\.\s*)*[a-z_][\w$]*)\s*\(/gi)) {
-		const name = match[1]?.replace(/\s+/g, "").split(".").at(-1)?.toLowerCase();
-		if (name && !SQL_PAREN_KEYWORD[name]) return true;
-	}
-	return false;
-}
-
-function stripLeadingSqlComments(sql: string): string {
-	let value = sql.trim();
-	for (;;) {
-		const next = value.replace(/^(?:--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/\s*)/, "").trimStart();
-		if (next === value) return value;
-		value = next;
-	}
-}
-
-function maskSqlLiteralsAndComments(sql: string): string {
-	const output = [...sql];
-	let index = 0;
-	while (index < sql.length) {
-		let end = index;
-		const character = sql[index];
-		if (character === "-" && sql[index + 1] === "-") {
-			end = sql.indexOf("\n", index + 2);
-			if (end < 0) end = sql.length;
-		} else if (character === "/" && sql[index + 1] === "*") {
-			const close = sql.indexOf("*/", index + 2);
-			end = close < 0 ? sql.length : close + 2;
-		} else if (character === "'" || character === '"' || character === "`") {
-			end = index + 1;
-			while (end < sql.length) {
-				if (sql[end] === "\\" && end + 1 < sql.length) {
-					end += 2;
-					continue;
-				}
-				if (sql[end] !== character) {
-					end++;
-					continue;
-				}
-				if (sql[end + 1] === character) {
-					end += 2;
-					continue;
-				}
-				end++;
-				break;
-			}
-		} else if (character === "[") {
-			end = index + 1;
-			while (end < sql.length) {
-				if (sql[end] !== "]") {
-					end++;
-					continue;
-				}
-				if (sql[end + 1] === "]") {
-					end += 2;
-					continue;
-				}
-				end++;
-				break;
-			}
-		} else if (character === "$") {
-			const delimiter = sql.slice(index).match(/^\$(?:[a-z_][a-z0-9_]*)?\$/i)?.[0];
-			if (delimiter) {
-				const close = sql.indexOf(delimiter, index + delimiter.length);
-				end = close < 0 ? sql.length : close + delimiter.length;
-			}
-		}
-
-		if (end <= index) {
-			index++;
-			continue;
-		}
-		for (let maskIndex = index; maskIndex < end; maskIndex++) {
-			if (output[maskIndex] !== "\n") output[maskIndex] = " ";
-		}
-		index = end;
-	}
-	return output.join("");
-}
-
-function hasMultipleStatements(sql: string): boolean {
-	const first = sql.indexOf(";");
-	return first >= 0 && sql.slice(first + 1).trim().length > 0;
-}
 
 export function inspectSql(sql: string): GuardVerdict {
-	const normalized = stripLeadingSqlComments(sql);
-	const syntax = maskSqlLiteralsAndComments(normalized);
-
-	for (const [pattern, reason] of CATASTROPHIC_DATABASE_PATTERNS) {
-		if (pattern.test(syntax)) return verdict("deny", "database", reason);
-	}
-
-	if (DANGEROUS_SELECT_FUNCTION.test(syntax)) {
-		return verdict("ask", "database", "read-shaped SQL invokes a database administration function");
-	}
-
-	if (hasMultipleStatements(syntax)) {
-		return verdict("ask", "database", "multiple SQL statements require review");
-	}
-
-	if (/^explain\b/i.test(normalized)) {
-		let explained = normalized.replace(/^explain\b/i, "").trimStart();
-		let analyze = false;
-		if (explained.startsWith("(")) {
-			const optionsEnd = explained.indexOf(")");
-			if (optionsEnd < 0) return verdict("classify", "database", "EXPLAIN options are not statically understood");
-			analyze = /\banalyze\b/i.test(explained.slice(1, optionsEnd));
-			explained = explained.slice(optionsEnd + 1).trimStart();
-		} else if (/^analyze\b/i.test(explained)) {
-			analyze = true;
-			explained = explained.replace(/^analyze\b/i, "").trimStart();
+	for (const [pattern, keyword] of SUSPICIOUS_DATABASE_PATTERNS) {
+		if (pattern.test(sql)) {
+			return verdict(
+				"classify",
+				"database-suspicious",
+				`SQL contains suspicious ${keyword} text; determine whether it is executable, quoted, or commented`,
+			);
 		}
-		if (analyze) {
-			return verdict("classify", "database", "EXPLAIN ANALYZE executes the explained statement");
-		}
-		return inspectSql(explained);
 	}
-
-	if (MUTATING_DATABASE_PATTERN.test(syntax)) {
-		return verdict("ask", "database", "SQL may mutate database state or administration settings");
-	}
-
-	if (/^select\b/i.test(syntax) && READ_SHAPED_MUTATION_PATTERN.test(syntax)) {
-		return verdict("ask", "database", "read-shaped SQL may create data or acquire database locks");
-	}
-	if (/^(?:select|show|describe|desc)\b/i.test(syntax)) {
-		if (hasSqlFunctionCall(syntax)) {
-			return verdict("classify", "database", "function-bearing SQL requires semantic review");
-		}
-		return verdict("allow", "database-read", "clearly read-only SQL");
-	}
-
-	return verdict("classify", "database", "database operation is not statically understood");
+	return verdict("classify", "database", "complete SQL requires dialect-aware semantic review");
 }
 
 function inspectSensitiveRead(input: Record<string, unknown>): GuardVerdict | undefined {
@@ -383,27 +234,7 @@ function inspectDatabaseCall(toolName: string, input: Record<string, unknown>): 
 
 	const queries: string[] = [];
 	namedStrings(input, SQL_ARGUMENT_KEY, queries);
-	const reviewText = [...queries, execution].join("\n");
-	for (const [pattern, reason] of CATASTROPHIC_DATABASE_PATTERNS) {
-		if (pattern.test(reviewText)) return verdict("deny", "database", reason);
-	}
-
-	const sqlCandidates = queries.filter(value =>
-		/^\s*(?:--[^\n]*\n\s*)*(?:\/\*[\s\S]*?\*\/\s*)*(?:alter|analyze|attach|begin|cluster|copy|create|delete|describe|desc|detach|drop|explain|flushall|grant|insert|merge|pragma|reindex|replace|restore|revoke|select|show|truncate|update|upsert|vacuum|with)\b/i.test(value),
-	);
-
-	if (sqlCandidates.length === 0) {
-		return verdict("classify", "database", "database tool call contains no statically identifiable query");
-	}
-
-	let sawClassify = false;
-	for (const candidate of sqlCandidates) {
-		const result = inspectSql(candidate);
-		if (result.decision === "deny" || result.decision === "ask") return result;
-		if (result.decision === "classify") sawClassify = true;
-	}
-	if (sawClassify) return verdict("classify", "database", "database query requires semantic review");
-	return verdict("allow", "database-read", "all identified database queries are read-only");
+	return inspectSql([...queries, execution].join("\n"));
 }
 
 

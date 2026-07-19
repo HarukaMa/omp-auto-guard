@@ -19,41 +19,30 @@ import {
 
 
 describe("SQL policy", () => {
-	test("allows straightforward read-only queries", () => {
-		expect(inspectSql("SELECT * FROM pg_stat_activity").decision).toBe("allow");
-		expect(inspectSql("EXPLAIN SELECT * FROM users").decision).toBe("allow");
-		expect(inspectSql("SELECT * FROM users WHERE (active = true OR admin = true)").decision).toBe("allow");
-		expect(inspectSql("SELECT * FROM notes WHERE body = 'signed into account'").decision).toBe("allow");
-		expect(inspectSql("SELECT * FROM notes WHERE body = 'please update this'").decision).toBe("allow");
-		expect(inspectSql("SELECT '; DROP DATABASE production' AS example").decision).toBe("allow");
-		expect(inspectSql("SELECT * FROM notes -- update later").decision).toBe("allow");
+	test("routes complete SQL to dialect-aware semantic review", () => {
+		for (const sql of [
+			"SELECT * FROM pg_stat_activity",
+			"UPDATE users SET active = false",
+			"SELECT 1; SELECT 2",
+			String.raw`SELECT 'a\'; DROP TABLE t; --'`,
+			"SELECT '; DROP DATABASE production' AS example",
+			"-- cleanup\nDROP DATABASE production",
+		]) {
+			expect(inspectSql(sql).decision).toBe("classify");
+		}
 	});
 
-	test("requires review for writes, execution, functions, and ambiguous statements", () => {
-		expect(inspectSql("UPDATE users SET active = false").decision).toBe("ask");
-		expect(inspectSql("EXPLAIN ANALYZE DELETE FROM events").decision).toBe("classify");
-		expect(inspectSql("EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM users").decision).toBe("classify");
-		expect(inspectSql("SELECT count(*) FROM events").decision).toBe("classify");
-		expect(inspectSql("WITH recent AS (SELECT 1) SELECT * FROM recent").decision).toBe("classify");
-		expect(inspectSql("SELECT 1; SELECT 2").decision).toBe("ask");
-	});
-
-	test("requires approval for read-shaped writes and locks", () => {
-		expect(inspectSql("SELECT * INTO archived_users FROM users").decision).toBe("ask");
-		expect(inspectSql("SELECT * FROM jobs FOR SHARE").decision).toBe("ask");
-		expect(inspectSql("SELECT * FROM jobs FOR KEY SHARE").decision).toBe("ask");
-		expect(inspectSql("SELECT * FROM jobs FOR SHARE SKIP LOCKED").decision).toBe("ask");
-		expect(inspectSql("SELECT * FROM jobs FOR UPDATE").decision).toBe("ask");
-		expect(inspectSql("SELECT * FROM jobs FOR NO KEY UPDATE").decision).toBe("ask");
-	});
-
-	test("blocks catastrophic database operations despite leading comments", () => {
-		expect(inspectSql("-- cleanup\nDROP DATABASE production").decision).toBe("deny");
-		expect(inspectSql("/* maintenance */ FLUSHALL").decision).toBe("deny");
-	});
-
-	test("does not trust side-effecting functions hidden in SELECT", () => {
-		expect(inspectSql("SELECT pg_terminate_backend(42)").decision).toBe("ask");
+	test("flags suspicious keywords without deciding whether they are executable", () => {
+		for (const sql of [
+			"DROP DATABASE production",
+			"FLUSHALL",
+			"SELECT '; DROP DATABASE production' AS example",
+			"-- cleanup\nDROP DATABASE production",
+		]) {
+			const result = inspectSql(sql);
+			expect(result.decision).toBe("classify");
+			expect(result.reason).toContain("determine whether it is executable, quoted, or commented");
+		}
 	});
 });
 
@@ -113,12 +102,12 @@ describe("tool policy", () => {
 		}
 	});
 
-	test("understands database MCP arguments", () => {
+	test("routes complete database operations to the classifier", () => {
 		expect(inspectToolCall("mcp__postgres__query", { sql: "SELECT count(*) FROM events" }).decision).toBe(
 			"classify",
 		);
-		expect(inspectToolCall("mcp__postgres__query", { sql: "TRUNCATE events" }).decision).toBe("ask");
-		expect(inspectToolCall("mcp__postgres__query", { sql: "DROP DATABASE production" }).decision).toBe("deny");
+		expect(inspectToolCall("mcp__postgres__query", { sql: "TRUNCATE events" }).decision).toBe("classify");
+		expect(inspectToolCall("mcp__postgres__query", { sql: "DROP DATABASE production" }).decision).toBe("classify");
 		expect(inspectToolCall("mcp__postgres__query", { queryId: "saved-query-12" }).decision).toBe("classify");
 	});
 
@@ -136,7 +125,7 @@ describe("tool policy", () => {
 				sql: "SELECT * FROM events",
 				description: "Example only: DROP DATABASE production",
 			}).decision,
-		).toBe("allow");
+		).toBe("classify");
 	});
 
 

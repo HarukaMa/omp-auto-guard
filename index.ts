@@ -61,6 +61,8 @@ Authorization and scope:
 
 Effect analysis:
 - Inspect the complete command and its arguments for side effects. If it is genuinely unclear whether a shell command writes state, changes services, invokes an unknown mutating program, or accesses sensitive data, ask and name that specific ambiguity.
+- For database tools, inspect the complete SQL or command as one dialect-specific input. Ask when dialect, quoting, dynamic execution, functions, or procedural code prevents establishing its concrete effects; never assume a statement is read-only from its leading keyword alone.
+- Treat destructive database keywords in raw arguments as suspicion, not proof: determine whether each occurrence is executable, quoted, or commented, and ask if that distinction is unclear.
 - Do not assume a command is safe merely because it is described as a check, encoded, indirect, inside a script, or uses an unfamiliar tool. Conversely, do not assume it is unsafe merely because it runs remotely or against production.
 - A request to inspect, benchmark, test, or explain authorizes its necessary reads but does not authorize mutation unless an authoritative user message explicitly requests or approves that mutation and target, directly or by approving a concrete plan.
 - Database writes, deployments, migrations, remote changes, and production/shared mutations require either an authoritative user message explicitly requesting or approving the operation and targets, or an authoritative approval of a concrete plan that identifies them.
@@ -473,6 +475,18 @@ function approvalInputSummary(input: Record<string, unknown>): string {
 	return `${summary.slice(0, APPROVAL_SUMMARY_MAX_CHARS - marker.length)}${marker}`;
 }
 
+function completeApprovalInput(input: Record<string, unknown>): string {
+	const redacted = redactForClassifier(input);
+	if (!isRecord(redacted)) return JSON.stringify(redacted) ?? String(redacted);
+	const lines = Object.keys(redacted).map(key => {
+		const value = redacted[key];
+		return typeof value === "string"
+			? `${key}:\n${value}`
+			: `${key}: ${JSON.stringify(value, null, 2) ?? String(value)}`;
+	});
+	return lines.join("\n\n") || "(no arguments)";
+}
+
 
 function createApprovalAskInput(
 	event: ToolCallEvent,
@@ -480,6 +494,7 @@ function createApprovalAskInput(
 	approvalId: string,
 	fingerprint: string,
 	verdict: Exclude<GuardVerdict, { decision: "classify" }> | ClassifierVerdict,
+	completeInput?: Record<string, unknown>,
 ): ApprovalAskInput {
 	const question = [
 		`OMP Auto Guard review ${approvalId}`,
@@ -488,7 +503,9 @@ function createApprovalAskInput(
 		`Call fingerprint: sha256:${fingerprint.slice(0, 16)}`,
 		`Category: ${verdict.category}`,
 		`Reason: ${verdict.reason}`,
-		`Arguments (redacted summary; long values may be abbreviated):\n${approvalInputSummary(event.input)}`,
+		completeInput
+			? `Complete classifier arguments (redacted):\n${completeApprovalInput(completeInput)}`
+			: `Arguments (redacted summary; long values may be abbreviated):\n${approvalInputSummary(event.input)}`,
 		"Allow this exact blocked tool call once?",
 	].join("\n\n");
 	const preview = `${APPROVAL_RATIONALE_PREFIX}${APPROVAL_RATIONALE_PLACEHOLDER}`;
@@ -666,6 +683,7 @@ async function enforceVerdict(
 	approvals: Map<string, ApprovalRecord>,
 	approvalEpoch: number,
 	verdict: Exclude<GuardVerdict, { decision: "classify" }> | ClassifierVerdict,
+	completeInput?: Record<string, unknown>,
 ): Promise<ToolCallResult> {
 	if (verdict.decision === "allow") return undefined;
 	const reviewSuffix = "reviewId" in verdict && verdict.reviewId ? ` [review ${verdict.reviewId}]` : "";
@@ -697,6 +715,7 @@ async function enforceVerdict(
 			approvalId,
 			fingerprint,
 			verdict,
+			completeInput,
 		),
 		expiresAt: Date.now() + APPROVAL_RETRY_WINDOW_MS,
 	};
@@ -792,7 +811,12 @@ export default function autoGuard(pi: ExtensionAPI): void {
 					reason: `OMP Auto Guard discarded a stale ${typedEvent.toolName} review after the agent or session changed. Retry only if the call is still needed in the current context.`,
 				};
 			}
-			return enforceVerdict(typedEvent, ctx, approvals, approvalEpoch, classified);
+			const completeInput =
+				staticVerdict.category.startsWith("database") &&
+				classifierInputBytes(redactForClassifier(classifiedEvent.input)) <= MAX_CLASSIFIER_INPUT_BYTES
+					? classifiedEvent.input
+					: undefined;
+			return enforceVerdict(typedEvent, ctx, approvals, approvalEpoch, classified, completeInput);
 		} finally {
 			ctx.ui.setStatus(STATUS_KEY, undefined);
 		}

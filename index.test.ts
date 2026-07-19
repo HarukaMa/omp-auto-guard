@@ -337,6 +337,8 @@ describe("classifier authorization policy", () => {
 		expect(CLASSIFIER_PROMPT).toContain("approvedPlan baseline snapshot, and approvedAmendments");
 		expect(CLASSIFIER_PROMPT).toContain("Inspect the complete command and its arguments for side effects");
 		expect(CLASSIFIER_PROMPT).toContain("genuinely unclear whether a shell command writes state");
+		expect(CLASSIFIER_PROMPT).toContain("complete SQL or command as one dialect-specific input");
+		expect(CLASSIFIER_PROMPT).toContain("suspicion, not proof");
 		expect(CLASSIFIER_PROMPT).toContain("specific material risk that is not already covered");
 		expect(CLASSIFIER_PROMPT).toContain("explicitly requests or approves that operation");
 		expect(CLASSIFIER_PROMPT).toContain("Merely mentioning, discussing, or asking about a possible mutation does not authorize it");
@@ -357,6 +359,72 @@ describe("classifier authorization policy", () => {
 	test("does not use mere irrelevance as a hard safety denial", () => {
 		expect(CLASSIFIER_PROMPT).toContain("Mere task irrelevance or a low-consequence scope mismatch is never enough to deny");
 		expect(CLASSIFIER_PROMPT).toContain("Task relevance alone is not a safety boundary");
+	});
+});
+
+describe("database classifier routing", () => {
+	test("sends complete SQL and exposes it when the classifier asks", async () => {
+		const guard = setupGuard();
+		const sql = String.raw`SELECT 'a\'; DROP TABLE t; --'
+SELECT * FROM audit_log;`;
+		let payload: Record<string, unknown> | undefined;
+		guard.setModel({ provider: "openai-codex", id: "gpt-5.6-sol", reasoning: true });
+		setCompleteImplementation((...args) => {
+			const request = args[1] as { messages: [{ content: [{ text: string }] }] };
+			payload = JSON.parse(request.messages[0].content[0].text);
+			return Promise.resolve({
+				content: [
+					{
+						type: "text",
+						text: '{"decision":"ask","category":"database-risk","reason":"The SQL may contain an executable DROP statement."}',
+					},
+				],
+				responseId: "database-response",
+				stopReason: "stop",
+				usage: { input: 10, output: 10 },
+			});
+		});
+
+		try {
+			const blocked = await guard.toolCallHandler(
+				{ toolCallId: "database-1", toolName: "mcp__postgres__query", input: { sql } },
+				guard.context,
+			);
+			expect(payload).toMatchObject({
+				classifierTier: "strong",
+				toolName: "mcp__postgres__query",
+				toolArguments: { sql },
+			});
+			expect(payload?.staticPolicyObservation).toContain("determine whether it is executable, quoted, or commented");
+			expect(blocked?.block).toBe(true);
+			const question = extractAskInput(blocked).questions[0]!.question;
+			expect(question).toContain("The SQL may contain an executable DROP statement.");
+			expect(question).toContain("Complete classifier arguments (redacted):");
+			expect(question).toContain(sql);
+		} finally {
+			setCompleteImplementation();
+		}
+	});
+
+	test("honors classifier allow after suspicious text review", async () => {
+		const guard = setupGuard();
+		const payloads: Record<string, unknown>[] = [];
+		const sql = "SELECT 'DROP TABLE users' AS note";
+		guard.setModel({ provider: "openai-codex", id: "gpt-5.6-sol", reasoning: true });
+		installAllowingClassifier(payloads);
+
+		try {
+			expect(
+				await guard.toolCallHandler(
+					{ toolCallId: "database-allow", toolName: "mcp__postgres__query", input: { sql } },
+					guard.context,
+				),
+			).toBeUndefined();
+			expect(payloads[0]?.toolArguments).toEqual({ sql });
+			expect(payloads[0]?.staticPolicyObservation).toContain("suspicious DROP text");
+		} finally {
+			setCompleteImplementation();
+		}
 	});
 });
 
