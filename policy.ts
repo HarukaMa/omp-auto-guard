@@ -8,6 +8,8 @@ export interface GuardVerdict {
 
 export interface ClassifierVerdict {
 	decision: "allow" | "ask" | "deny";
+	riskLevel: "low" | "medium" | "high" | "critical" | "unspecified";
+	userAuthorization: "present" | "missing" | "ambiguous" | "unspecified";
 	category: string;
 	reason: string;
 	reviewId?: string;
@@ -24,6 +26,11 @@ export interface TechnicalExcerpt {
 	toolName: string;
 	isError: boolean;
 	text: string;
+}
+
+export interface ToolCallExcerpt {
+	toolName: string;
+	arguments: string;
 }
 
 export interface ApprovedPlanAmendment {
@@ -564,6 +571,10 @@ export function recentConversation(entries: readonly unknown[]): ConversationExc
 
 	const authoritativeUsers = candidates.filter(candidate => candidate.authoritative).reverse();
 	addCandidates(authoritativeUsers, 6000, 8);
+	const firstAuthoritativeUser = candidates.find(candidate => candidate.authoritative);
+	if (firstAuthoritativeUser && !selectedIndices.has(firstAuthoritativeUser.index)) {
+		addCandidates([firstAuthoritativeUser], 3000, 1);
+	}
 	const approvedPlans: ConversationCandidate[] = [];
 	for (const userMessage of authoritativeUsers.slice(0, 8)) {
 		if (userMessage.pairedAssistantIndex !== undefined) {
@@ -611,6 +622,36 @@ export function recentTechnicalContext(entries: readonly unknown[]): TechnicalEx
 	return selected
 		.reverse()
 		.map(({ toolName, isError, text }) => ({ toolName, isError, text }));
+}
+
+export function recentToolCalls(entries: readonly unknown[]): ToolCallExcerpt[] {
+	const selected: Array<ToolCallExcerpt & { index: number; itemIndex: number }> = [];
+	let remainingCharacters = 4000;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		if (selected.length >= 8 || remainingCharacters <= 0) break;
+		const entry = entries[index];
+		if (!entry || typeof entry !== "object") continue;
+		const record = entry as Record<string, unknown>;
+		if (record.type !== "message" || !record.message || typeof record.message !== "object") continue;
+		const message = record.message as Record<string, unknown>;
+		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+		for (let itemIndex = message.content.length - 1; itemIndex >= 0; itemIndex--) {
+			if (selected.length >= 8 || remainingCharacters <= 0) break;
+			const item = message.content[itemIndex];
+			if (!item || typeof item !== "object") continue;
+			const call = item as Record<string, unknown>;
+			if (call.type !== "toolCall" || typeof call.name !== "string" || call.name === "ask") continue;
+			const argumentsText = truncateExcerpt(
+				JSON.stringify(redactForClassifier(call.arguments ?? {})),
+				Math.min(500, remainingCharacters),
+			);
+			selected.push({ index, itemIndex, toolName: call.name, arguments: argumentsText });
+			remainingCharacters -= argumentsText.length;
+		}
+	}
+	return selected
+		.reverse()
+		.map(({ toolName, arguments: argumentsText }) => ({ toolName, arguments: argumentsText }));
 }
 
 function taggedSection(text: string, tag: string): string | undefined {
@@ -741,15 +782,26 @@ export function classifierInputBytes(value: unknown): number {
 	return Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
 }
 
+const CLASSIFIER_DECISIONS: Record<string, true> = { allow: true, ask: true, deny: true };
+const CLASSIFIER_RISK_LEVELS: Record<string, true> = { low: true, medium: true, high: true, critical: true };
+const CLASSIFIER_AUTHORIZATIONS: Record<string, true> = { present: true, missing: true, ambiguous: true };
+
 export function parseClassifierVerdict(text: string): ClassifierVerdict | undefined {
 	const match = text.match(/\{[\s\S]*\}/);
 	if (!match) return undefined;
 	try {
 		const parsed = JSON.parse(match[0]) as Record<string, unknown>;
-		if (!new Set(["allow", "ask", "deny"]).has(String(parsed.decision))) return undefined;
+		const decision = String(parsed.decision);
+		if (!CLASSIFIER_DECISIONS[decision]) return undefined;
 		if (typeof parsed.reason !== "string" || parsed.reason.trim().length === 0) return undefined;
+		const riskLevel = String(parsed.riskLevel ?? parsed.risk_level);
+		const userAuthorization = String(parsed.userAuthorization ?? parsed.user_authorization);
 		return {
-			decision: parsed.decision as ClassifierVerdict["decision"],
+			decision: decision as ClassifierVerdict["decision"],
+			riskLevel: CLASSIFIER_RISK_LEVELS[riskLevel] ? (riskLevel as ClassifierVerdict["riskLevel"]) : "unspecified",
+			userAuthorization: CLASSIFIER_AUTHORIZATIONS[userAuthorization]
+				? (userAuthorization as ClassifierVerdict["userAuthorization"])
+				: "unspecified",
 			category: typeof parsed.category === "string" ? parsed.category.slice(0, 64) : "classified",
 			reason: parsed.reason.trim().slice(0, 300),
 		};

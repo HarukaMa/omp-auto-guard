@@ -13,6 +13,7 @@ import {
 	parseClassifierVerdict,
 	recentConversation,
 	recentTechnicalContext,
+	recentToolCalls,
 	redactForClassifier,
 	selectClassifierInstructions,
 	unwrapBuiltinXdevCall,
@@ -593,6 +594,54 @@ describe("classifier conversation context", () => {
 		expect(selected.every(item => item.text.length <= 500)).toBe(true);
 		expect(selected.reduce((sum, item) => sum + item.text.length, 0)).toBeLessThanOrEqual(8000);
 	});
+
+	test("adds the first user without displacing the existing recent-user budget", () => {
+		const entry = (text: string) => ({
+			type: "message",
+			message: { role: "user", content: [{ type: "text", text }] },
+		});
+		const selected = recentConversation([
+			entry(`Original target ${"o".repeat(2400)}`),
+			...Array.from({ length: 9 }, (_, index) => entry(`Follow-up ${index}: ${"f".repeat(700)}`)),
+		]).filter(message => message.authoritative);
+
+		expect(selected).toHaveLength(9);
+		expect(selected[0]?.text).toContain("Original target");
+		expect(selected.some(message => message.text.startsWith("Follow-up 0:"))).toBe(false);
+		expect(selected.reduce((sum, message) => sum + message.text.length, 0)).toBeGreaterThan(6000);
+	});
+
+	test("adds bounded redacted prior tool arguments separately from results", () => {
+		const selected = recentToolCalls([
+			{
+				type: "message",
+				message: {
+					role: "assistant",
+					content: [
+						...Array.from({ length: 10 }, (_, index) => ({
+							type: "toolCall",
+							id: `call-${index}`,
+							name: "bash",
+							arguments: {
+								command:
+									index === 9
+										? `password=supersecret ${"x".repeat(600)}`
+										: `command ${index}: ${"x".repeat(600)}`,
+							},
+						})),
+						{ type: "toolCall", id: "ask-1", name: "ask", arguments: { questions: [] } },
+					],
+				},
+			},
+		]);
+
+		expect(selected).toHaveLength(8);
+		expect(selected[0]?.arguments).toContain("command 2");
+		expect(selected.at(-1)?.arguments).toContain("password=[REDACTED]");
+		expect(selected.some(call => call.arguments.includes("supersecret"))).toBe(false);
+		expect(selected.every(call => call.arguments.length <= 500)).toBe(true);
+		expect(selected.reduce((sum, call) => sum + call.arguments.length, 0)).toBeLessThanOrEqual(4000);
+	});
 });
 
 describe("classifier instruction context", () => {
@@ -733,12 +782,19 @@ describe("classifier boundary", () => {
 		);
 	});
 
-	test("accepts strict decisions and rejects malformed output", () => {
+	test("accepts strict decisions and records optional risk dimensions", () => {
 		expect(parseClassifierVerdict('{"decision":"ask","category":"remote","reason":"shared target"}')).toEqual({
 			decision: "ask",
+			riskLevel: "unspecified",
+			userAuthorization: "unspecified",
 			category: "remote",
 			reason: "shared target",
 		});
+		expect(
+			parseClassifierVerdict(
+				'{"decision":"allow","riskLevel":"low","userAuthorization":"present","reason":"authorized read"}',
+			),
+		).toMatchObject({ decision: "allow", riskLevel: "low", userAuthorization: "present" });
 		expect(parseClassifierVerdict("allow")).toBeUndefined();
 		expect(parseClassifierVerdict('{"decision":"maybe","reason":"unclear"}')).toBeUndefined();
 		expect(parseClassifierVerdict('{"decision":"allow","reason":""}')).toBeUndefined();

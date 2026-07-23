@@ -43,9 +43,9 @@ Every tool call receives one static policy decision:
 - `deny`: block a narrowly defined catastrophic operation.
 - `classify`: send the call to the configured safety classifier.
 
-Classifier failures, invalid responses, unavailable models, oversized inputs, and timeouts fail closed to `ask`.
+Empty, invalid, or provider-failed classifier responses are retried once within the original deadline. Exhausted retries, unavailable models, oversized inputs, and timeouts fail closed to `ask`.
 
-Approval identity is a SHA-256 digest over the approval epoch, working directory, tool name, and canonicalized arguments. A permit is single-use, expires five minutes after approval is recorded (not five minutes after the Ask is issued), and is invalidated by lifecycle changes, working-directory changes, or queued input or advice. Rejecting, timing out, redirecting to chat, entering custom Ask text, or changing protected Ask fields does not authorize the call.
+Approval identity is a SHA-256 digest over the approval epoch, working directory, tool name, and canonicalized arguments. A permit is single-use, expires five minutes after approval is recorded (not five minutes after the Ask is issued), and is invalidated by lifecycle changes, working-directory changes, or queued input or advice. While input is pending, statically proven non-sensitive reads and `todo` may proceed, but classified calls, Ask, and writes remain paused. Rejecting, timing out, redirecting to chat, entering custom Ask text, or changing protected Ask fields does not authorize the call.
 
 OMP Plan Mode approval is recognized only from the exact core-generated approval or active-plan reference message. Auto Guard snapshots the referenced `local://` plan before the next tool executes and supplies the complete snapshot, up to 128 KiB, as the immutable baseline authority. Later authoritative user approvals of concrete inline assistant plans are supplied as bounded, immutable amendments whose explicit scope is additive. Assistant text never self-authorizes, later user restrictions take precedence, and later plan-file edits do not expand authorization. Missing, unreadable, malformed, or oversized plans grant no baseline authority.
 
@@ -79,7 +79,8 @@ If configured classifier candidates cannot be resolved, Auto Guard falls back to
 Model classification can transmit the following to the resolved classifier provider:
 
 - Working-directory path
-- Selected recent user and assistant conversation
+- The first authoritative user message plus the existing bounded selection of recent user and assistant conversation
+- Up to 8 recent non-Ask tool calls, with best-effort-redacted arguments limited to 500 characters each
 - Up to 16 recent non-Ask tool results, best-effort-redacted and limited to 500 characters each
 - Immutable approved Plan Mode content, when active
 - Bounded inline plan amendments paired with later authoritative user approvals
@@ -89,7 +90,7 @@ Model classification can transmit the following to the resolved classifier provi
 
 Redaction is not a reliable data-loss-prevention mechanism. Commands, paths, SQL, conversation text, and model responses may contain sensitive data. Configure classifier providers and credentials accordingly.
 
-When audit logging is enabled, records include the classifier model, effort, latency, normalized token usage, tool name, policy observation, raw model response, and verdict. Invalid responses also include stop, error, and content-type diagnostics. `OMP_AUTO_GUARD_LOG_INCLUDE_CONTEXT=1` additionally records the classifier payload and full invalid response content blocks. Protect audit logs as sensitive data and do not commit them.
+When audit logging is enabled, records include the classifier model, effort, latency, attempt count, normalized token usage, tool name, policy observation, raw model response, risk level, authorization assessment, and verdict. Retried failures and invalid responses include attempt diagnostics. `OMP_AUTO_GUARD_LOG_INCLUDE_CONTEXT=1` additionally records the classifier payload and full invalid response content blocks. Protect audit logs as sensitive data and do not commit them.
 
 ## Security model and limitations
 
