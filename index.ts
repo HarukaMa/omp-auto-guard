@@ -103,6 +103,7 @@ interface ApprovalAskInput {
 			options: [
 				{ label: string; description: string; preview: string },
 				{ label: string; description: string; preview: string },
+				{ label: string; description: string; preview: string },
 			];
 			multi: false;
 			recommended: number;
@@ -410,6 +411,7 @@ async function classifyWithModel(
 const APPROVAL_RETRY_WINDOW_MS = 5 * 60_000;
 
 const APPROVE_OPTION = "Approve once";
+const REVIEW_BATCH_OPTION = "Review batch";
 const REJECT_OPTION = "Reject";
 const APPROVAL_ASK_PREFIX = "omp-auto-guard";
 const APPROVAL_SUMMARY_MAX_CHARS = 512;
@@ -482,7 +484,7 @@ function pendingApprovalResult(event: ToolCallEvent, pending: PendingApproval): 
 		reason: [
 			`OMP Auto Guard requires native user approval ${pending.id} for ${event.toolName}.`,
 			"Invoke the native ask tool exactly once with the JSON template below, then wait for its actual tool result.",
-			`Replace ${JSON.stringify(APPROVAL_RATIONALE_PLACEHOLDER)} in both option preview fields with the same concise, single-line rationale. Change nothing else.`,
+			`Replace ${JSON.stringify(APPROVAL_RATIONALE_PLACEHOLDER)} in all option preview fields with the same concise, single-line rationale. Change nothing else.`,
 			"Do not use resolve. Do not retry the blocked call until Ask returns.",
 			`Native Ask input (use exactly after replacing the rationale placeholder):\n${JSON.stringify(pending.askInput)}`,
 		].join("\n"),
@@ -550,7 +552,7 @@ function createApprovalAskInput(
 		completeInput
 			? `Complete classifier arguments (redacted):\n${completeApprovalInput(completeInput)}`
 			: `Arguments (redacted summary; long values may be abbreviated):\n${approvalInputSummary(event.input)}`,
-		"Allow this exact blocked tool call once?",
+		"Allow this exact call once, return to the agent to review a broader batch, or reject?",
 	].join("\n\n");
 	const preview = `${APPROVAL_RATIONALE_PREFIX}${APPROVAL_RATIONALE_PLACEHOLDER}`;
 
@@ -567,13 +569,18 @@ function createApprovalAskInput(
 						preview,
 					},
 					{
+						label: REVIEW_BATCH_OPTION,
+						description: "Do not authorize this call; return to the agent to propose one concrete batch.",
+						preview,
+					},
+					{
 						label: REJECT_OPTION,
 						description: "Do not authorize this call.",
 						preview,
 					},
 				],
 				multi: false,
-				recommended: 1,
+				recommended: 2,
 			},
 		],
 	};
@@ -598,6 +605,7 @@ function approvalAskInputWithRationale(template: ApprovalAskInput, rationale: st
 				options: [
 					{ ...question.options[0], preview },
 					{ ...question.options[1], preview },
+					{ ...question.options[2], preview },
 				],
 			},
 		],
@@ -607,12 +615,19 @@ function approvalAskInputWithRationale(template: ApprovalAskInput, rationale: st
 function approvalRationale(input: Record<string, unknown>): string | undefined {
 	if (!Array.isArray(input.questions) || input.questions.length !== 1) return undefined;
 	const question = input.questions[0];
-	if (!isRecord(question) || !Array.isArray(question.options) || question.options.length !== 2) return undefined;
+	if (!isRecord(question) || !Array.isArray(question.options) || question.options.length !== 3) return undefined;
 	const first = question.options[0];
 	const second = question.options[1];
-	if (!isRecord(first) || !isRecord(second)) return undefined;
-	if (typeof first.preview !== "string" || first.preview !== second.preview) return undefined;
-	if (!first.preview.startsWith(APPROVAL_RATIONALE_PREFIX)) return undefined;
+	const third = question.options[2];
+	if (!isRecord(first) || !isRecord(second) || !isRecord(third)) return undefined;
+	if (
+		typeof first.preview !== "string" ||
+		first.preview !== second.preview ||
+		first.preview !== third.preview ||
+		!first.preview.startsWith(APPROVAL_RATIONALE_PREFIX)
+	) {
+		return undefined;
+	}
 	const rationale = first.preview.slice(APPROVAL_RATIONALE_PREFIX.length);
 	if (
 		rationale === APPROVAL_RATIONALE_PLACEHOLDER ||
@@ -664,8 +679,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function isApprovedAskResult(event: ToolResultEvent, pending: PendingApproval): boolean {
-	if (event.isError || !sameToolInput(event.input, pending.askInput) || !isRecord(event.details)) return false;
+type ApprovalAskOutcome = "approve" | "review-batch" | "reject";
+
+function approvalAskOutcome(event: ToolResultEvent, pending: PendingApproval): ApprovalAskOutcome {
+	if (event.isError || !sameToolInput(event.input, pending.askInput) || !isRecord(event.details)) return "reject";
 	const details = event.details;
 	const expectedQuestion = pending.askInput.questions[0];
 	const expectedOptions = expectedQuestion.options.map(option => option.label);
@@ -675,16 +692,16 @@ function isApprovedAskResult(event: ToolResultEvent, pending: PendingApproval): 
 		details.customInput !== undefined ||
 		details.note !== undefined
 	) {
-		return false;
+		return "reject";
 	}
-	if (details.results !== undefined || details.question !== expectedQuestion.question || details.multi !== false) return false;
-	if (!Array.isArray(details.options) || details.options.length !== expectedOptions.length) return false;
-	if (!details.options.every((option, index) => option === expectedOptions[index])) return false;
-	return (
-		Array.isArray(details.selectedOptions) &&
-		details.selectedOptions.length === 1 &&
-		details.selectedOptions[0] === APPROVE_OPTION
-	);
+	if (details.results !== undefined || details.question !== expectedQuestion.question || details.multi !== false) {
+		return "reject";
+	}
+	if (!Array.isArray(details.options) || details.options.length !== expectedOptions.length) return "reject";
+	if (!details.options.every((option, index) => option === expectedOptions[index])) return "reject";
+	if (!Array.isArray(details.selectedOptions) || details.selectedOptions.length !== 1) return "reject";
+	if (details.selectedOptions[0] === APPROVE_OPTION) return "approve";
+	return details.selectedOptions[0] === REVIEW_BATCH_OPTION ? "review-batch" : "reject";
 }
 
 function handleAskToolResult(
@@ -700,9 +717,9 @@ function handleAskToolResult(
 	}
 	if (!matched) return undefined;
 
-	const approved = isApprovedAskResult(event, matched.pending);
+	const outcome = approvalAskOutcome(event, matched.pending);
 	approvals.delete(matched.key);
-	if (approved) {
+	if (outcome === "approve") {
 		approvals.set(matched.key, {
 			id: matched.pending.id,
 			status: "approved",
@@ -713,9 +730,12 @@ function handleAskToolResult(
 		});
 	}
 
-	const instruction = approved
-		? `OMP Auto Guard recorded approval ${matched.pending.id}. Retry the exact ${matched.pending.toolName} call now with unchanged arguments. This approval is single-use.`
-		: `OMP Auto Guard did not record approval ${matched.pending.id}. Do not retry ${matched.pending.toolName} without starting a new approval.`;
+	const instruction =
+		outcome === "approve"
+			? `OMP Auto Guard recorded approval ${matched.pending.id}. Retry the exact ${matched.pending.toolName} call now with unchanged arguments. This approval is single-use.`
+			: outcome === "review-batch"
+				? `OMP Auto Guard did not authorize ${matched.pending.toolName}. Present one concrete revised batch that names every operation, target, live effect, verification step, and rollback, then wait for explicit user approval. Do not retry ${matched.pending.toolName} until that approval has been incorporated.`
+				: `OMP Auto Guard did not record approval ${matched.pending.id}. Do not retry ${matched.pending.toolName} without starting a new approval.`;
 	return { content: [...event.content, { type: "text", text: instruction }] };
 }
 

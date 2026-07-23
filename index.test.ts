@@ -811,14 +811,19 @@ describe("native Ask approval retry", () => {
 		expect(blocked?.block).toBe(true);
 		expect(blocked?.reason).toContain("Invoke the native ask tool exactly once");
 		expect(blocked?.reason).toContain("Replace \"__OMP_AUTO_GUARD_AGENT_RATIONALE__\"");
+		expect(blocked?.reason).toContain("all option preview fields");
 		expect(blocked?.reason).toContain("Do not use resolve");
 		const input = extractAskInput(blocked);
 		expect(input.questions).toHaveLength(1);
 		expect(input.questions[0]?.id).toStartWith("omp-auto-guard:");
 		expect(input.questions[0]?.question).toContain("C:/Users/me/.ssh/id_ed25519");
-		expect(input.questions[0]?.options.map(option => option.label)).toEqual(["Approve once", "Reject"]);
+		expect(input.questions[0]?.options.map(option => option.label)).toEqual([
+			"Approve once",
+			"Review batch",
+			"Reject",
+		]);
 		expect(input.questions[0]?.multi).toBe(false);
-		expect(input.questions[0]?.recommended).toBe(1);
+		expect(input.questions[0]?.recommended).toBe(2);
 		expect(guard.confirmCalls).toBe(0);
 		expect(guard.sendMessageCalls).toBe(0);
 
@@ -829,7 +834,7 @@ describe("native Ask approval retry", () => {
 		expect(prematureRetry?.block).toBe(true);
 		expect(prematureRetry?.reason).toContain("waiting for the native Ask result");
 	});
-	test("keeps approval prompts compact and puts agent rationale in both previews", async () => {
+	test("keeps approval prompts compact and puts agent rationale in all previews", async () => {
 		const guard = setupGuard();
 		const blocked = await guard.toolCallHandler(
 			{
@@ -843,7 +848,7 @@ describe("native Ask approval retry", () => {
 		const question = template.questions[0]!.question;
 		const summary = question
 			.split("Arguments (redacted summary; long values may be abbreviated):\n")[1]!
-			.split("\n\nAllow this exact blocked tool call once?")[0]!;
+			.split("\n\nAllow this exact call once, return to the agent to review a broader batch, or reject?")[0]!;
 		expect(summary.length).toBeLessThanOrEqual(512);
 		expect(summary).toContain("command:");
 		expect(summary).toContain("chars");
@@ -855,6 +860,7 @@ describe("native Ask approval retry", () => {
 
 		const input = withAgentRationale(template, "I need this exact mutation to finish the approved release.");
 		expect(input.questions[0]!.options.map(option => option.preview)).toEqual([
+			`${RATIONALE_PREFIX}I need this exact mutation to finish the approved release.`,
 			`${RATIONALE_PREFIX}I need this exact mutation to finish the approved release.`,
 			`${RATIONALE_PREFIX}I need this exact mutation to finish the approved release.`,
 		]);
@@ -1110,6 +1116,23 @@ describe("native Ask approval retry", () => {
 		expect(
 			await guard.toolCallHandler({ ...original, toolCallId: "original-proto-2" }, guard.context),
 		).toBeUndefined();
+	});
+
+	test("review batch grants no permit and returns control for one revised plan", async () => {
+		const guard = setupGuard();
+		const call = guardedRead("batch-original");
+		const askToolCallId = "batch-ask";
+		const input = await beginHandshake(guard, call, askToolCallId);
+		const update = await guard.toolResultHandler(
+			askResult(askToolCallId, input, askDetails(input, ["Review batch"], { timedOut: false })),
+		);
+
+		expect(update?.content?.at(-1)?.text).toContain("did not authorize");
+		expect(update?.content?.at(-1)?.text).toContain("one concrete revised batch");
+		expect(update?.content?.at(-1)?.text).toContain("then wait for explicit user approval");
+		const retry = await guard.toolCallHandler({ ...call, toolCallId: "batch-retry" }, guard.context);
+		expect(retry?.block).toBe(true);
+		expect(retry?.reason).toContain("requires native user approval");
 	});
 
 	test("reject, timeout, cancellation, custom input, notes, and chat redirect never authorize", async () => {
