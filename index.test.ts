@@ -256,9 +256,8 @@ function withAgentRationale(
 	rationale = "This exact call is needed to complete the requested operation.",
 ): AskInput {
 	const input = structuredClone(template);
-	for (const option of input.questions[0]?.options ?? []) {
-		option.preview = `${RATIONALE_PREFIX}${rationale}`;
-	}
+	const option = input.questions[0]?.options[0];
+	if (option) option.preview = `${RATIONALE_PREFIX}${rationale}`;
 	return input;
 }
 
@@ -811,7 +810,7 @@ describe("native Ask approval retry", () => {
 		expect(blocked?.block).toBe(true);
 		expect(blocked?.reason).toContain("Invoke the native ask tool exactly once");
 		expect(blocked?.reason).toContain("Replace \"__OMP_AUTO_GUARD_AGENT_RATIONALE__\"");
-		expect(blocked?.reason).toContain("all option preview fields");
+		expect(blocked?.reason).toContain("the approval option preview");
 		expect(blocked?.reason).toContain("Do not use resolve");
 		const input = extractAskInput(blocked);
 		expect(input.questions).toHaveLength(1);
@@ -834,7 +833,7 @@ describe("native Ask approval retry", () => {
 		expect(prematureRetry?.block).toBe(true);
 		expect(prematureRetry?.reason).toContain("waiting for the native Ask result");
 	});
-	test("keeps approval prompts compact and puts agent rationale in all previews", async () => {
+	test("keeps approval prompts compact and puts agent rationale in one preview", async () => {
 		const guard = setupGuard();
 		const blocked = await guard.toolCallHandler(
 			{
@@ -854,15 +853,17 @@ describe("native Ask approval retry", () => {
 		expect(summary).toContain("chars");
 		expect(question).toMatch(/Call fingerprint: sha256:[0-9a-f]{16}/);
 		expect(question).not.toContain("x".repeat(1_000));
-		expect(template.questions[0]!.options.every(option => option.preview?.endsWith(RATIONALE_PLACEHOLDER))).toBe(
-			true,
-		);
+		expect(template.questions[0]!.options.map(option => option.preview)).toEqual([
+			`${RATIONALE_PREFIX}${RATIONALE_PLACEHOLDER}`,
+			undefined,
+			undefined,
+		]);
 
 		const input = withAgentRationale(template, "I need this exact mutation to finish the approved release.");
 		expect(input.questions[0]!.options.map(option => option.preview)).toEqual([
 			`${RATIONALE_PREFIX}I need this exact mutation to finish the approved release.`,
-			`${RATIONALE_PREFIX}I need this exact mutation to finish the approved release.`,
-			`${RATIONALE_PREFIX}I need this exact mutation to finish the approved release.`,
+			undefined,
+			undefined,
 		]);
 		expect(await guard.toolCallHandler(askCall("compact-ask", input), guard.context)).toBeUndefined();
 	});
@@ -879,9 +880,9 @@ describe("native Ask approval retry", () => {
 			withAgentRationale(template, "x".repeat(401)),
 			withAgentRationale(template, " padded "),
 		];
-		const unequal = withAgentRationale(template, "first");
-		unequal.questions[0]!.options[1]!.preview = `${RATIONALE_PREFIX}second`;
-		invalidInputs.push(unequal);
+		const extra = withAgentRationale(template, "first");
+		extra.questions[0]!.options[1]!.preview = `${RATIONALE_PREFIX}second`;
+		invalidInputs.push(extra);
 		const changed = withAgentRationale(template, "valid rationale");
 		changed.questions[0]!.question += " changed";
 		invalidInputs.push(changed);

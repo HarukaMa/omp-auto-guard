@@ -102,8 +102,8 @@ interface ApprovalAskInput {
 			header: string;
 			options: [
 				{ label: string; description: string; preview: string },
-				{ label: string; description: string; preview: string },
-				{ label: string; description: string; preview: string },
+				{ label: string; description: string },
+				{ label: string; description: string },
 			];
 			multi: false;
 			recommended: number;
@@ -484,7 +484,7 @@ function pendingApprovalResult(event: ToolCallEvent, pending: PendingApproval): 
 		reason: [
 			`OMP Auto Guard requires native user approval ${pending.id} for ${event.toolName}.`,
 			"Invoke the native ask tool exactly once with the JSON template below, then wait for its actual tool result.",
-			`Replace ${JSON.stringify(APPROVAL_RATIONALE_PLACEHOLDER)} in all option preview fields with the same concise, single-line rationale. Change nothing else.`,
+			`Replace ${JSON.stringify(APPROVAL_RATIONALE_PLACEHOLDER)} in the approval option preview with a concise, single-line rationale. Change nothing else.`,
 			"Do not use resolve. Do not retry the blocked call until Ask returns.",
 			`Native Ask input (use exactly after replacing the rationale placeholder):\n${JSON.stringify(pending.askInput)}`,
 		].join("\n"),
@@ -571,12 +571,10 @@ function createApprovalAskInput(
 					{
 						label: REVIEW_BATCH_OPTION,
 						description: "Do not authorize this call; return to the agent to propose one concrete batch.",
-						preview,
 					},
 					{
 						label: REJECT_OPTION,
 						description: "Do not authorize this call.",
-						preview,
 					},
 				],
 				multi: false,
@@ -604,8 +602,8 @@ function approvalAskInputWithRationale(template: ApprovalAskInput, rationale: st
 				...question,
 				options: [
 					{ ...question.options[0], preview },
-					{ ...question.options[1], preview },
-					{ ...question.options[2], preview },
+					{ ...question.options[1] },
+					{ ...question.options[2] },
 				],
 			},
 		],
@@ -617,13 +615,9 @@ function approvalRationale(input: Record<string, unknown>): string | undefined {
 	const question = input.questions[0];
 	if (!isRecord(question) || !Array.isArray(question.options) || question.options.length !== 3) return undefined;
 	const first = question.options[0];
-	const second = question.options[1];
-	const third = question.options[2];
-	if (!isRecord(first) || !isRecord(second) || !isRecord(third)) return undefined;
 	if (
+		!isRecord(first) ||
 		typeof first.preview !== "string" ||
-		first.preview !== second.preview ||
-		first.preview !== third.preview ||
 		!first.preview.startsWith(APPROVAL_RATIONALE_PREFIX)
 	) {
 		return undefined;
@@ -848,7 +842,7 @@ export default function autoGuard(pi: ExtensionAPI): void {
 			});
 			return {
 				block: true,
-				reason: `OMP Auto Guard blocked a mismatched guard approval Ask before display. Replace only ${APPROVAL_RATIONALE_PLACEHOLDER} in both preview fields of the current template with the same concise, single-line rationale.`,
+				reason: `OMP Auto Guard blocked a mismatched guard approval Ask before display. Replace only ${APPROVAL_RATIONALE_PLACEHOLDER} in the approval option preview of the current template with a concise, single-line rationale.`,
 			};
 		}
 
