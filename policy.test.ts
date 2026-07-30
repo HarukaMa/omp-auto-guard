@@ -733,7 +733,7 @@ describe("classifier instruction context", () => {
 		expect(selected).not.toContain("There is no stopping condition other than completion");
 	});
 
-	test("extracts project rules from the stock base and preserves unknown blocks", () => {
+	test("extracts authoritative compact-prompt sections and preserves custom blocks", () => {
 		const selected = selectClassifierInstructions([
 			[
 				"<system-conventions>",
@@ -741,15 +741,21 @@ describe("classifier instruction context", () => {
 				"==============",
 				"<generic-rules>GENERIC_SENTINEL</generic-rules>",
 				"<domain-rules>DOMAIN_SENTINEL</domain-rules>",
+				"<skills>SKILL_CATALOG_NOISE</skills>",
+				'<repo-rules><file path="AGENTS.md">REPO_RULES_SENTINEL</file></repo-rules>',
 				"TOOL POLICY",
 				"==============",
+				"TOOL_DOCUMENTATION_NOISE",
 			].join("\n"),
-			"UNKNOWN_SENTINEL",
+			"CUSTOM_SENTINEL",
 			"<active-repo-context>OMP ROUTING</active-repo-context>",
 		]).join("\n");
 		expect(selected).toContain("GENERIC_SENTINEL");
 		expect(selected).toContain("DOMAIN_SENTINEL");
-		expect(selected).toContain("UNKNOWN_SENTINEL");
+		expect(selected).toContain("REPO_RULES_SENTINEL");
+		expect(selected).toContain("CUSTOM_SENTINEL");
+		expect(selected).not.toContain("SKILL_CATALOG_NOISE");
+		expect(selected).not.toContain("TOOL_DOCUMENTATION_NOISE");
 		expect(selected).not.toContain("OMP ROUTING");
 		expect(selected).not.toContain("ROLE\n==============");
 	});

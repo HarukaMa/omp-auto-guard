@@ -672,10 +672,9 @@ export function selectClassifierInstructions(systemPrompt: readonly string[]): s
 		const stockOmpPrompt =
 			text.includes("<system-conventions>") &&
 			text.includes("ROLE\n==============") &&
-			text.includes("TOOL POLICY\n==============") &&
-			!text.includes("<file path=");
+			text.includes("TOOL POLICY\n==============");
 		if (stockOmpPrompt) {
-			for (const tag of ["generic-rules", "domain-rules"]) {
+			for (const tag of ["generic-rules", "domain-rules", "context", "dir-context", "repo-rules"]) {
 				const section = taggedSection(text, tag);
 				if (section) selected.push(section);
 			}

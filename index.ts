@@ -71,12 +71,24 @@ Effect analysis:
 - When a material mutation depends on mutable external state, prefer immutable identifiers and tool-supported preconditions such as commit SHAs, object versions, or compare-and-swap conditions. If the call instead relies on a mutable branch, tag, path, row selection, or remote name whose contents could change between approval and execution, ask when that unresolved time-of-check/time-of-use risk is material.
 - Prefer allow for clearly in-scope, low-consequence operations. Ask only when you can identify a specific material risk or unresolved scope mismatch; generic uncertainty is not enough.`;
 
+export const FAST_CLASSIFIER_PROMPT =
+	"Extended thinking adds latency and should only be used when it will meaningfully improve verdict quality. This is a bounded classification task; unless the supplied evidence is genuinely complex or ambiguous, answer directly without deliberating and return the JSON immediately.";
+
 const STATUS_KEY = "omp-auto-guard";
 const DEFAULT_TIMEOUT_MS = 12_000;
 
 export function classifierTimeoutMs(configured = process.env.OMP_AUTO_GUARD_TIMEOUT_MS): number {
 	const value = Number(configured);
 	return Number.isFinite(value) ? Math.min(28_000, Math.max(1_000, value)) : DEFAULT_TIMEOUT_MS;
+}
+
+export function classifierDeadlineExceeded(
+	signal: AbortSignal,
+	startedAt: number,
+	timeoutMs: number,
+	now = performance.now(),
+): boolean {
+	return signal.aborted || now - startedAt >= timeoutMs;
 }
 
 interface ToolCallEvent {
@@ -269,8 +281,9 @@ async function classifyWithModel(
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	const startedAt = performance.now();
 	const classifierInstructions = selectClassifierInstructions(ctx.getSystemPrompt());
-	const systemPrompt = [CLASSIFIER_PROMPT, ...classifierInstructions];
-	const promptCacheKey = createHash("sha256").update(JSON.stringify(systemPrompt)).digest("hex");
+	const cachePrefix = [CLASSIFIER_PROMPT, ...(tier === "fast" ? [FAST_CLASSIFIER_PROMPT] : [])];
+	const systemPrompt = [...cachePrefix, ...classifierInstructions];
+	const promptCacheKey = createHash("sha256").update(JSON.stringify(cachePrefix)).digest("hex");
 	const branch = ctx.sessionManager.getBranch();
 	const approvedAmendments = approvedPlanAmendments(branch);
 	const payload = {
@@ -312,7 +325,7 @@ async function classifyWithModel(
 					{ apiKey, signal: controller.signal, temperature: 0, reasoning: effort, promptCacheKey },
 				);
 				classifierUsage = response.usage;
-				if (controller.signal.aborted) {
+				if (classifierDeadlineExceeded(controller.signal, startedAt, timeoutMs)) {
 					failure = `Classifier exceeded ${timeoutMs} ms`;
 					finalVerdict = {
 						decision: "ask",
