@@ -706,7 +706,44 @@ export function selectClassifierInstructions(systemPrompt: readonly string[]): s
 
 const READ_ONLY_SERENA_TOOL = /^mcp__serena_(?:initial_instructions|get_symbols_overview|find_symbol|find_referencing_symbols|find_implementations|find_declaration|get_diagnostics_for_file|read_memory)$/;
 
+function hasNonBlankString(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0;
+}
+
+function inspectHubCall(input: Record<string, unknown>): GuardVerdict {
+	switch (input.op) {
+		case "wait":
+			return verdict("allow", "read", "waiting for a peer, job, or supervised process");
+		case "inbox":
+			return verdict("allow", "read", "reading the current agent's coordination inbox");
+		case "list":
+			return verdict("allow", "read", "listing addressable peer agents");
+		case "jobs":
+			return verdict("allow", "read", "reading the current agent's background-job status");
+		case "cancel":
+			return verdict("allow", "read", "cancelling the current agent's owned background jobs");
+		case "ps":
+			return verdict("allow", "read", "listing project-supervised processes");
+		case "logs":
+			return verdict("allow", "read", "reading project-supervised process logs");
+		case "describe":
+			return verdict("allow", "read", "reading a project-supervised process description");
+		case "send":
+			if (hasNonBlankString(input.to) && !hasNonBlankString(input.name)) {
+				return verdict("allow", "read", "sending an intra-session peer coordination message");
+			}
+			return verdict("classify", "process-control", "process input or signaling requires semantic review");
+		case "start":
+		case "stop":
+		case "restart":
+			return verdict("classify", "process-control", "process lifecycle control requires semantic review");
+		default:
+			return verdict("classify", "stateful", "unknown Hub operation requires semantic review");
+	}
+}
+
 export function inspectToolCall(toolName: string, input: Record<string, unknown>): GuardVerdict {
+	if (toolName === "hub") return inspectHubCall(input);
 	if (toolName === "ask") return verdict("allow", "interactive", "native user prompt");
 	if (SAFE_TOOLS.has(toolName)) {
 		return inspectSensitiveRead(input) ?? verdict("allow", "read", "read-only tool");

@@ -1318,6 +1318,45 @@ describe("native Ask approval retry", () => {
 		);
 	});
 
+	test("allows benign Hub operations headlessly despite queued input", async () => {
+		const guard = setupGuard(false);
+		guard.setPendingMessages(true);
+		const calls: ToolCall[] = [
+			{ toolCallId: "hub-send-peer", toolName: "hub", input: { op: "send", to: "Main", message: "Check .env." } },
+			{ toolCallId: "hub-wait-peer", toolName: "hub", input: { op: "wait" } },
+			{ toolCallId: "hub-wait-process", toolName: "hub", input: { op: "wait", name: "web", for: "ready" } },
+			{ toolCallId: "hub-inbox", toolName: "hub", input: { op: "inbox", peek: true } },
+			{ toolCallId: "hub-list", toolName: "hub", input: { op: "list" } },
+			{ toolCallId: "hub-jobs", toolName: "hub", input: { op: "jobs" } },
+			{ toolCallId: "hub-cancel", toolName: "hub", input: { op: "cancel", ids: ["AuditDocsCore"] } },
+			{ toolCallId: "hub-ps", toolName: "hub", input: { op: "ps" } },
+			{ toolCallId: "hub-logs", toolName: "hub", input: { op: "logs", name: "web" } },
+			{ toolCallId: "hub-describe", toolName: "hub", input: { op: "describe", name: "web" } },
+		];
+
+		for (const call of calls) {
+			expect(await guard.toolCallHandler(call, guard.context)).toBeUndefined();
+		}
+		expect(guard.confirmCalls).toBe(0);
+	});
+
+	test("keeps Hub process control blocked headlessly", async () => {
+		const guard = setupGuard(false);
+		for (const input of [
+			{ op: "send", name: "web", signal: "SIGTERM" },
+			{ op: "start", name: "web", application: "bun", args: ["run", "dev"] },
+			{ op: "stop", name: "web" },
+			{ op: "restart", name: "web" },
+		]) {
+			const result = await guard.toolCallHandler(
+				{ toolCallId: `hub-process-${input.op}`, toolName: "hub", input },
+				guard.context,
+			);
+			expect(result?.block).toBe(true);
+			expect(result?.reason).toContain("no interactive UI is available");
+		}
+	});
+
 	test("fails closed without UI and creates no Ask handshake", async () => {
 		const guard = setupGuard(false);
 		const result = await guard.toolCallHandler(guardedRead("headless-1"), guard.context);

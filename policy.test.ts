@@ -73,6 +73,44 @@ describe("tool policy", () => {
 		expect(inspectToolCall("lsp", { action: "rename" }).decision).toBe("classify");
 	});
 
+	test("allows benign Hub coordination and inspection without scanning peer content", () => {
+		for (const input of [
+			{ op: "wait" },
+			{ op: "wait", name: "web", for: "ready" },
+			{ op: "inbox", peek: true },
+			{ op: "list" },
+			{ op: "jobs" },
+			{ op: "cancel", ids: ["AuditDocsCore"] },
+			{ op: "ps" },
+			{ op: "logs", name: "web" },
+			{ op: "describe", name: "web" },
+			{
+				op: "send",
+				to: "Main",
+				name: "  ",
+				message: "Check .env and http://169.254.169.254/latest/meta-data.",
+			},
+		]) {
+			const result = inspectToolCall("hub", input);
+			expect(result.decision).toBe("allow");
+			expect(result.category).toBe("read");
+		}
+	});
+
+	test("keeps Hub process control and invalid sends under semantic review", () => {
+		for (const input of [
+			{ op: "send", name: "web", text: "reload" },
+			{ op: "send", to: "Main", name: "web", message: "conflicting targets" },
+			{ op: "send", message: "missing recipient" },
+			{ op: "start", name: "web", application: "bun", args: ["run", "dev"] },
+			{ op: "stop", name: "web" },
+			{ op: "restart", name: "web" },
+			{ op: "unknown" },
+		]) {
+			expect(inspectToolCall("hub", input).decision).toBe("classify");
+		}
+	});
+
 	test("unwraps only exact OMP builtin virtual-device calls", () => {
 		const recall = unwrapBuiltinXdevCall("write", {
 			path: "xd://recall",
