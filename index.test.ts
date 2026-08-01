@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { AskTool } from "@oh-my-pi/pi-coding-agent/tools/ask";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,7 +41,7 @@ interface AskInput {
 		id: string;
 		question: string;
 		header?: string;
-		options: Array<{ label: string; description?: string; preview?: string }>;
+		options: Array<{ label: string; description?: string; preview?: string | null }>;
 		multi?: boolean;
 		recommended?: number;
 	}>;
@@ -862,6 +863,28 @@ describe("native Ask approval retry", () => {
 		expect(prematureRetry?.block).toBe(true);
 		expect(prematureRetry?.reason).toContain("waiting for the native Ask result");
 	});
+	test("recovers when queued input invalidates an approval Ask", async () => {
+		const guard = setupGuard();
+		const call = guardedRead("interrupted-original-1");
+		const blocked = await guard.toolCallHandler(call, guard.context);
+		const input = withAgentRationale(extractAskInput(blocked));
+		guard.setPendingMessages(true);
+
+		const interrupted = await guard.toolCallHandler(askCall("interrupted-ask-1", input), guard.context);
+		expect(interrupted?.reason).toContain("invalidated this approval Ask");
+		expect(interrupted?.reason).toContain("Do not retry this Ask");
+
+		guard.setPendingMessages(false);
+		const stale = await guard.toolCallHandler(askCall("interrupted-ask-2", input), guard.context);
+		expect(stale?.reason).toContain("stale or invalidated");
+		expect(stale?.reason).toContain("Retry the original blocked operation");
+
+		const fresh = await guard.toolCallHandler(
+			{ ...call, toolCallId: "interrupted-original-2" },
+			guard.context,
+		);
+		expect(extractAskInput(fresh).questions[0]?.id).not.toBe(input.questions[0]?.id);
+	});
 	test("keeps approval prompts compact and puts agent rationale in one preview", async () => {
 		const guard = setupGuard();
 		const blocked = await guard.toolCallHandler(
@@ -887,6 +910,7 @@ describe("native Ask approval retry", () => {
 			undefined,
 			undefined,
 		]);
+		expect(new AskTool({} as never).parameters.allows(template)).toBe(true);
 
 		const input = withAgentRationale(template, "I need this exact mutation to finish the approved release.");
 		expect(input.questions[0]!.options.map(option => option.preview)).toEqual([
@@ -895,6 +919,30 @@ describe("native Ask approval retry", () => {
 			undefined,
 		]);
 		expect(await guard.toolCallHandler(askCall("compact-ask", input), guard.context)).toBeUndefined();
+	});
+	test("treats provider null option previews as omitted during approval binding", async () => {
+		const guard = setupGuard();
+		const call = guardedRead("nullable-preview-original-1");
+		const blocked = await guard.toolCallHandler(call, guard.context);
+		const input = withAgentRationale(extractAskInput(blocked));
+		input.questions[0]!.options[1]!.preview = null;
+		input.questions[0]!.options[2]!.preview = null;
+
+		expect(await guard.toolCallHandler(askCall("nullable-preview-ask", input), guard.context)).toBeUndefined();
+		const update = await guard.toolResultHandler(
+			askResult(
+				"nullable-preview-ask",
+				input,
+				askDetails(input, ["Approve once"], { timedOut: false }),
+			),
+		);
+		expect(update?.content?.at(-1)?.text).toContain("recorded approval");
+		expect(
+			await guard.toolCallHandler(
+				{ ...call, toolCallId: "nullable-preview-original-2" },
+				guard.context,
+			),
+		).toBeUndefined();
 	});
 
 	test("accepts only one bounded single-line rationale without other template changes", async () => {
@@ -909,6 +957,9 @@ describe("native Ask approval retry", () => {
 			withAgentRationale(template, "x".repeat(401)),
 			withAgentRationale(template, " padded "),
 		];
+		const unrelatedNull = withAgentRationale(template, "valid rationale");
+		(unrelatedNull as unknown as Record<string, unknown>).preview = null;
+		invalidInputs.push(unrelatedNull);
 		const extra = withAgentRationale(template, "first");
 		extra.questions[0]!.options[1]!.preview = `${RATIONALE_PREFIX}second`;
 		invalidInputs.push(extra);

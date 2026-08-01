@@ -504,8 +504,22 @@ function pendingApprovalResult(event: ToolCallEvent, pending: PendingApproval): 
 	};
 }
 
-function sameToolInput(left: unknown, right: unknown): boolean {
-	return JSON.stringify(canonicalizeToolInput(left)) === JSON.stringify(canonicalizeToolInput(right));
+function normalizeApprovalAskInput(input: unknown): unknown {
+	const normalized = structuredClone(input);
+	if (!isRecord(normalized) || !Array.isArray(normalized.questions)) return normalized;
+	const question = normalized.questions[0];
+	if (!isRecord(question) || !Array.isArray(question.options)) return normalized;
+	for (const index of [1, 2]) {
+		const option = question.options[index];
+		if (isRecord(option) && option.preview === null) delete option.preview;
+	}
+	return normalized;
+}
+
+function sameApprovalAskInput(left: unknown, right: unknown): boolean {
+	const normalizedLeft = normalizeApprovalAskInput(left);
+	const normalizedRight = normalizeApprovalAskInput(right);
+	return JSON.stringify(canonicalizeToolInput(normalizedLeft)) === JSON.stringify(canonicalizeToolInput(normalizedRight));
 }
 
 function abbreviatedValue(value: unknown, maxChars: number): string {
@@ -674,7 +688,7 @@ function bindApprovalAsk(
 		const rationale = approvalRationale(event.input);
 		if (rationale === undefined) continue;
 		const expected = approvalAskInputWithRationale(approval.askInput, rationale);
-		if (!sameToolInput(event.input, expected)) continue;
+		if (!sameApprovalAskInput(event.input, expected)) continue;
 		approval.askInput = expected;
 		approval.askToolCallId = event.toolCallId;
 		return "bound";
@@ -689,7 +703,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 type ApprovalAskOutcome = "approve" | "review-batch" | "reject";
 
 function approvalAskOutcome(event: ToolResultEvent, pending: PendingApproval): ApprovalAskOutcome {
-	if (event.isError || !sameToolInput(event.input, pending.askInput) || !isRecord(event.details)) return "reject";
+	if (event.isError || !sameApprovalAskInput(event.input, pending.askInput) || !isRecord(event.details)) {
+		return "reject";
+	}
 	const details = event.details;
 	const expectedQuestion = pending.askInput.questions[0];
 	const expectedOptions = expectedQuestion.options.map(option => option.label);
@@ -826,6 +842,8 @@ export default function autoGuard(pi: ExtensionAPI): void {
 			clearApprovals();
 		}
 		if (ctx.hasPendingMessages()) {
+			const interruptedApprovalAsk =
+				typedEvent.toolName === "ask" && resemblesGuardApprovalAsk(typedEvent.input);
 			clearApprovals();
 			const safeRead =
 				staticVerdict.decision === "allow" &&
@@ -835,7 +853,9 @@ export default function autoGuard(pi: ExtensionAPI): void {
 			if (typedEvent.toolName !== "todo" && !safeRead) {
 				return {
 					block: true,
-					reason: `OMP Auto Guard paused ${typedEvent.toolName} because queued input or an advisory is pending. Retry only after the agent incorporates it.`,
+					reason: interruptedApprovalAsk
+						? "OMP Auto Guard invalidated this approval Ask because queued input or an advisory is pending. Incorporate it, then retry the original blocked operation to obtain a fresh approval template. Do not retry this Ask."
+						: `OMP Auto Guard paused ${typedEvent.toolName} because queued input or an advisory is pending. Retry only after the agent incorporates it.`,
 				};
 			}
 		}
@@ -845,17 +865,21 @@ export default function autoGuard(pi: ExtensionAPI): void {
 		if (typedEvent.toolName === "ask") {
 			const binding = bindApprovalAsk(typedEvent, approvals);
 			if (binding !== "mismatch") return undefined;
+			const pendingFingerprints = [...approvals.values()]
+				.filter((approval): approval is PendingApproval => approval.status === "pending")
+				.map(approval => approval.fingerprint);
+			const staleApprovalAsk = pendingFingerprints.length === 0;
 			await appendClassifierAudit({
 				timestamp: new Date().toISOString(),
-				event: "approval-ask-mismatch",
+				event: staleApprovalAsk ? "approval-ask-stale" : "approval-ask-mismatch",
 				receivedFingerprint: canonicalDigest(typedEvent.input),
-				pendingFingerprints: [...approvals.values()]
-					.filter((approval): approval is PendingApproval => approval.status === "pending")
-					.map(approval => approval.fingerprint),
+				pendingFingerprints,
 			});
 			return {
 				block: true,
-				reason: `OMP Auto Guard blocked a mismatched guard approval Ask before display. Replace only ${APPROVAL_RATIONALE_PLACEHOLDER} in the approval option preview of the current template with a concise, single-line rationale.`,
+				reason: staleApprovalAsk
+					? "OMP Auto Guard blocked a stale or invalidated guard approval Ask before display. Retry the original blocked operation to obtain a fresh approval template; do not retry this Ask."
+					: `OMP Auto Guard blocked a mismatched guard approval Ask before display. Replace only ${APPROVAL_RATIONALE_PLACEHOLDER} in the approval option preview of the current template with a concise, single-line rationale.`,
 			};
 		}
 
