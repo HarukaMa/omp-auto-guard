@@ -27,6 +27,7 @@ import {
 	recentToolCalls,
 	redactForClassifier,
 	unwrapBuiltinXdevCall,
+	unwrapXdevCall,
 	selectClassifierInstructions,
 	type ClassifierVerdict,
 	type ConfiguredEffort,
@@ -850,8 +851,22 @@ export default function autoGuard(pi: ExtensionAPI): void {
 			toolName: event.toolName,
 			input: event.input as Record<string, unknown>,
 		};
-		const classifiedEvent = { ...typedEvent, ...unwrapBuiltinXdevCall(typedEvent.toolName, typedEvent.input) };
-		const staticVerdict = inspectToolCall(classifiedEvent.toolName, classifiedEvent.input);
+		const builtinXdevEvent = unwrapBuiltinXdevCall(typedEvent.toolName, typedEvent.input);
+		const genericXdevEvent = unwrapXdevCall(typedEvent.toolName, typedEvent.input);
+		const genericXdevDispatch =
+			genericXdevEvent.toolName !== typedEvent.toolName &&
+			builtinXdevEvent.toolName === typedEvent.toolName;
+		const classifiedEvent = {
+			...typedEvent,
+			...(genericXdevDispatch ? genericXdevEvent : builtinXdevEvent),
+		};
+		const staticVerdict = genericXdevDispatch
+			? {
+					decision: "classify" as const,
+					category: "xdev-device",
+					reason: "untrusted xd device requires semantic review",
+				}
+			: inspectToolCall(classifiedEvent.toolName, classifiedEvent.input);
 		cleanupApprovals(approvals);
 		cleanupXdevDispatchGrants(xdevDispatchGrants);
 		if ([...approvals.values()].some(approval => approval.cwd !== ctx.cwd || approval.epoch !== approvalEpoch)) {

@@ -17,6 +17,7 @@ import {
 	redactForClassifier,
 	selectClassifierInstructions,
 	unwrapBuiltinXdevCall,
+	unwrapXdevCall,
 } from "./policy";
 
 
@@ -132,11 +133,25 @@ describe("tool policy", () => {
 		});
 		expect(inspectToolCall(lsp.toolName, lsp.input).decision).toBe("allow");
 
+		const externalInput = {
+			path: "xd://mcp__binary_ninja_bn_function_decompile",
+			content: JSON.stringify({ function: "0x140001000" }),
+		};
+		expect(unwrapBuiltinXdevCall("write", externalInput)).toEqual({
+			toolName: "write",
+			input: externalInput,
+		});
+		expect(unwrapXdevCall("write", externalInput)).toEqual({
+			toolName: "mcp__binary_ninja_bn_function_decompile",
+			input: { function: "0x140001000" },
+		});
+
 		for (const input of [
 			{ path: "xd://recall?mode=write", content: "{}" },
 			{ path: "xd://custom", content: "{}" },
 			{ path: "xd://recall", content: "not-json" },
 			{ path: "xd://write", content: JSON.stringify({ path: "xd://recall", content: "{}" }) },
+			{ path: "xd://mcp__binary_ninja/tool", content: "{}" },
 		]) {
 			expect(unwrapBuiltinXdevCall("write", input)).toEqual({ toolName: "write", input });
 		}

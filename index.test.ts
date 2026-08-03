@@ -1061,6 +1061,40 @@ describe("native Ask approval retry", () => {
 		}
 	});
 
+	test("reviews a generic xd device once and grants its exact mounted call", async () => {
+		const guard = setupGuard();
+		const mountedToolName = "mcp__binary_ninja_bn_function_decompile";
+		const mountedInput = { function: "0x140001000", offset: 0, limit: 1000 };
+		const call: ToolCall = {
+			toolCallId: "generic-xdev-1",
+			toolName: "write",
+			input: {
+				path: `xd://${mountedToolName}`,
+				content: JSON.stringify(mountedInput),
+			},
+		};
+		const payloads: Record<string, unknown>[] = [];
+		guard.setModel({ provider: "openai-codex", id: "gpt-5.6-sol", reasoning: true });
+		installAllowingClassifier(payloads);
+
+		try {
+			expect(await guard.toolCallHandler(call, guard.context)).toBeUndefined();
+			expect(payloads).toHaveLength(1);
+			expect(payloads[0]?.toolName).toBe(mountedToolName);
+			expect(payloads[0]?.staticPolicyObservation).toBe("untrusted xd device requires semantic review");
+
+			expect(
+				await guard.toolCallHandler(
+					{ toolCallId: call.toolCallId, toolName: mountedToolName, input: mountedInput },
+					guard.context,
+				),
+			).toBeUndefined();
+			expect(payloads).toHaveLength(1);
+		} finally {
+			setCompleteImplementation();
+		}
+	});
+
 	test("starts the five-minute permit window when approval is recorded", async () => {
 		const realDateNow = Date.now;
 		let now = 1_000_000;

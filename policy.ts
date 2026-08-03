@@ -106,7 +106,7 @@ const XDEV_BUILTIN_TOOLS: Record<string, true> = {
 	web_search: true,
 };
 
-export function unwrapBuiltinXdevCall(
+export function unwrapXdevCall(
 	toolName: string,
 	input: Record<string, unknown>,
 ): { toolName: string; input: Record<string, unknown> } {
@@ -114,17 +114,25 @@ export function unwrapBuiltinXdevCall(
 	if (toolName !== "write" || typeof input.path !== "string" || typeof input.content !== "string") {
 		return original;
 	}
-	const path = input.path.trim();
-	if (path.slice(0, 5).toLowerCase() !== "xd://") return original;
-	const mountedToolName = path.slice(5);
-	if (XDEV_BUILTIN_TOOLS[mountedToolName] !== true) return original;
+	const match = /^xd:\/\/([A-Za-z0-9][A-Za-z0-9_-]*)$/i.exec(input.path.trim());
+	if (!match?.[1]) return original;
 	try {
 		const mountedInput: unknown = JSON.parse(input.content);
 		if (!mountedInput || typeof mountedInput !== "object" || Array.isArray(mountedInput)) return original;
-		return { toolName: mountedToolName, input: mountedInput as Record<string, unknown> };
+		return { toolName: match[1], input: mountedInput as Record<string, unknown> };
 	} catch {
 		return original;
 	}
+}
+
+export function unwrapBuiltinXdevCall(
+	toolName: string,
+	input: Record<string, unknown>,
+): { toolName: string; input: Record<string, unknown> } {
+	const original = { toolName, input };
+	const mounted = unwrapXdevCall(toolName, input);
+	if (mounted.toolName === toolName || XDEV_BUILTIN_TOOLS[mounted.toolName] !== true) return original;
+	return mounted;
 }
 
 const READ_ONLY_LSP_ACTIONS = new Set([
