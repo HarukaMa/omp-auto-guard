@@ -1005,6 +1005,62 @@ describe("native Ask approval retry", () => {
 		expect(replayAsk.questions[0]?.id).toStartWith("omp-auto-guard:");
 	});
 
+	test("authorizes an xd wrapper and its exact mounted call with one approval", async () => {
+		const guard = setupGuard();
+		const browserInput = {
+			action: "run",
+			name: "search-prod",
+			code: "await tab.click('aria/Continue');",
+		};
+		const call: ToolCall = {
+			toolCallId: "xdev-original-1",
+			toolName: "write",
+			input: { path: "xd://browser", content: JSON.stringify(browserInput) },
+		};
+		let classifierCalls = 0;
+		guard.setModel({ provider: "openai-codex", id: "gpt-5.6-sol", reasoning: true });
+		setCompleteImplementation(() => {
+			classifierCalls += 1;
+			return Promise.resolve({
+				content: [
+					{
+						type: "text",
+						text: '{"decision":"ask","category":"legal-consent","reason":"The click may record legal consent."}',
+					},
+				],
+				responseId: "xdev-approval-response",
+				stopReason: "stop",
+				usage: { input: 10, output: 10 },
+			});
+		});
+
+		try {
+			const { update } = await approveHandshake(guard, call, "xdev-ask-1");
+			expect(update?.content?.at(-1)?.text).toContain("recorded approval");
+
+			const retryToolCallId = "xdev-retry-1";
+			expect(
+				await guard.toolCallHandler({ ...call, toolCallId: retryToolCallId }, guard.context),
+			).toBeUndefined();
+			expect(
+				await guard.toolCallHandler(
+					{ toolCallId: retryToolCallId, toolName: "browser", input: browserInput },
+					guard.context,
+				),
+			).toBeUndefined();
+			expect(classifierCalls).toBe(1);
+
+			const replay = await guard.toolCallHandler(
+				{ toolCallId: retryToolCallId, toolName: "browser", input: browserInput },
+				guard.context,
+			);
+			expect(replay?.block).toBe(true);
+			expect(classifierCalls).toBe(2);
+		} finally {
+			setCompleteImplementation();
+		}
+	});
+
 	test("starts the five-minute permit window when approval is recorded", async () => {
 		const realDateNow = Date.now;
 		let now = 1_000_000;

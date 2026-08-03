@@ -457,6 +457,13 @@ type ApprovalRecord =
 
 type PendingApproval = Extract<ApprovalRecord, { status: "pending" }>;
 
+interface XdevDispatchGrant {
+	fingerprint: string;
+	cwd: string;
+	epoch: number;
+	expiresAt: number;
+}
+
 type ToolCallResult = { block: true; reason: string } | undefined;
 
 function canonicalizeToolInput(value: unknown): unknown {
@@ -617,6 +624,12 @@ function cleanupApprovals(approvals: Map<string, ApprovalRecord>, now = Date.now
 		const expiredUnboundRequest =
 			approval.status === "pending" && approval.askToolCallId === undefined && approval.expiresAt <= now;
 		if (expiredPermit || expiredUnboundRequest) approvals.delete(key);
+	}
+}
+
+function cleanupXdevDispatchGrants(grants: Map<string, XdevDispatchGrant>, now = Date.now()): void {
+	for (const [toolCallId, grant] of grants) {
+		if (grant.expiresAt <= now) grants.delete(toolCallId);
 	}
 }
 
@@ -812,11 +825,13 @@ async function enforceVerdict(
 
 export default function autoGuard(pi: ExtensionAPI): void {
 	const approvals = new Map<string, ApprovalRecord>();
+	const xdevDispatchGrants = new Map<string, XdevDispatchGrant>();
 	const approvedPlans = new Map<string, ApprovedPlanSnapshot>();
 	let approvalEpoch = 0;
 	const clearApprovals = () => {
 		approvalEpoch++;
 		approvals.clear();
+		xdevDispatchGrants.clear();
 	};
 	const clearSessionState = () => {
 		clearApprovals();
@@ -838,6 +853,7 @@ export default function autoGuard(pi: ExtensionAPI): void {
 		const classifiedEvent = { ...typedEvent, ...unwrapBuiltinXdevCall(typedEvent.toolName, typedEvent.input) };
 		const staticVerdict = inspectToolCall(classifiedEvent.toolName, classifiedEvent.input);
 		cleanupApprovals(approvals);
+		cleanupXdevDispatchGrants(xdevDispatchGrants);
 		if ([...approvals.values()].some(approval => approval.cwd !== ctx.cwd || approval.epoch !== approvalEpoch)) {
 			clearApprovals();
 		}
@@ -859,7 +875,31 @@ export default function autoGuard(pi: ExtensionAPI): void {
 				};
 			}
 		}
+		const xdevDispatchGrant = xdevDispatchGrants.get(typedEvent.toolCallId);
+		if (xdevDispatchGrant) {
+			xdevDispatchGrants.delete(typedEvent.toolCallId);
+			if (
+				xdevDispatchGrant.cwd === ctx.cwd &&
+				xdevDispatchGrant.epoch === approvalEpoch &&
+				xdevDispatchGrant.fingerprint === toolCallFingerprint(typedEvent, ctx.cwd, approvalEpoch)
+			) {
+				return undefined;
+			}
+		}
 		const eventApprovalEpoch = approvalEpoch;
+		const xdevDispatchFingerprint =
+			typedEvent.toolName === "write" && classifiedEvent.toolName !== typedEvent.toolName
+				? toolCallFingerprint(classifiedEvent, ctx.cwd, eventApprovalEpoch)
+				: undefined;
+		const grantMountedXdevCall = () => {
+			if (xdevDispatchFingerprint === undefined) return;
+			xdevDispatchGrants.set(typedEvent.toolCallId, {
+				fingerprint: xdevDispatchFingerprint,
+				cwd: ctx.cwd,
+				epoch: eventApprovalEpoch,
+				expiresAt: Date.now() + APPROVAL_RETRY_WINDOW_MS,
+			});
+		};
 		const approvedPlan = await currentApprovedPlan(ctx, approvedPlans);
 
 		if (typedEvent.toolName === "ask") {
@@ -888,11 +928,14 @@ export default function autoGuard(pi: ExtensionAPI): void {
 		if (approval?.status === "pending") return pendingApprovalResult(typedEvent, approval);
 		if (approval?.status === "approved") {
 			approvals.delete(key);
+			grantMountedXdevCall();
 			return undefined;
 		}
 
 		if (staticVerdict.decision !== "classify") {
-			return enforceVerdict(typedEvent, ctx, approvals, approvalEpoch, staticVerdict);
+			const result = await enforceVerdict(typedEvent, ctx, approvals, approvalEpoch, staticVerdict);
+			if (!result) grantMountedXdevCall();
+			return result;
 		}
 
 		ctx.ui.setStatus(STATUS_KEY, `Reviewing ${classifiedEvent.toolName}`);
@@ -916,7 +959,9 @@ export default function autoGuard(pi: ExtensionAPI): void {
 				classifierInputBytes(redactForClassifier(classifiedEvent.input)) <= MAX_CLASSIFIER_INPUT_BYTES
 					? classifiedEvent.input
 					: undefined;
-			return enforceVerdict(typedEvent, ctx, approvals, approvalEpoch, classified, completeInput);
+			const result = await enforceVerdict(typedEvent, ctx, approvals, approvalEpoch, classified, completeInput);
+			if (!result) grantMountedXdevCall();
+			return result;
 		} finally {
 			ctx.ui.setStatus(STATUS_KEY, undefined);
 		}
@@ -936,6 +981,7 @@ export default function autoGuard(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_result", event => {
+		xdevDispatchGrants.delete(event.toolCallId);
 		if (event.toolName !== "ask") return undefined;
 		const typedEvent: ToolResultEvent = {
 			toolCallId: event.toolCallId,
