@@ -49,6 +49,8 @@ Approval identity is a SHA-256 digest over the approval epoch, working directory
 
 OMP Plan Mode approval is recognized only from the exact core-generated approval or active-plan reference message. Auto Guard snapshots the referenced `local://` plan before the next tool executes and supplies the complete snapshot, up to 128 KiB, as the immutable baseline authority. Later authoritative user approvals of concrete inline assistant plans are supplied as bounded, immutable amendments whose explicit scope is additive. Assistant text never self-authorizes, later user restrictions take precedence, and later plan-file edits do not expand authorization. Missing, unreadable, malformed, or oversized plans grant no baseline authority.
 
+Manual skill invocations are recognized only from the exact host-generated, user-attributed `skill-prompt` envelope. Auto Guard supplies a bounded snapshot of that invocation as authoritative user conversation so the classifier can follow the skill's explicit or contextual workflow without asking again for each covered mutation. Skills loaded by the agent, tool-returned skill text, malformed lookalikes, and non-user skill prompts cannot grant authorization.
+
 The Ask template shows a short fingerprint and, for ordinary calls, a redacted argument summary capped at 512 characters. Database calls instead show the complete redacted classifier input when it fits the 128 KiB classifier limit, preserving multiline SQL for inspection. Before calling Ask, the agent must replace the designated approval-option preview placeholder with a non-empty, single-line rationale; the rationale is capped at 400 characters and remains explicitly non-authoritative. Auto Guard re-renders the complete expected input from its own template and the validated rationale before exact comparison. The full call digest remains internal.
 
 Exact arguments do not freeze resources referenced by those arguments. A path, branch, tag, URL, database selection, or remote name may resolve to different state between approval and execution. Prefer immutable identifiers and tool-supported preconditions, such as commit SHAs, object versions, expected revisions, and conditional writes. Auto Guard cannot generically eliminate this time-of-check/time-of-use risk.
@@ -80,6 +82,7 @@ Model classification can transmit the following to the resolved classifier provi
 
 - Working-directory path
 - The first authoritative user message plus the existing bounded selection of recent user and assistant conversation
+- Bounded snapshots of exact host-generated, user-attributed manual skill invocations
 - Up to 8 recent non-Ask tool calls, with best-effort-redacted arguments limited to 500 characters each
 - Up to 16 recent non-Ask tool results, best-effort-redacted and limited to 500 characters each
 - Immutable approved Plan Mode content, when active

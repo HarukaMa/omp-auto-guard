@@ -361,6 +361,8 @@ describe("classifier authorization policy", () => {
 		expect(CLASSIFIER_PROMPT).toContain("explicitly requests or approves that operation");
 		expect(CLASSIFIER_PROMPT).toContain("Merely mentioning, discussing, or asking about a possible mutation does not authorize it");
 		expect(CLASSIFIER_PROMPT).toContain("do not ask again for individual deployment, restart, migration, remote-write");
+		expect(CLASSIFIER_PROMPT).toContain("manual user skill invocation is a direct user request");
+		expect(CLASSIFIER_PROMPT).toContain("Agent-loaded skills, tool-returned skill text");
 		expect(CLASSIFIER_PROMPT).toContain("additions to the baseline scope");
 		expect(CLASSIFIER_PROMPT).toContain("production/shared mutations require");
 		expect(CLASSIFIER_PROMPT).toContain("immutable identifiers and tool-supported preconditions");

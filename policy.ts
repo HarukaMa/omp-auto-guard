@@ -443,6 +443,10 @@ function plainMessageText(message: Record<string, unknown>): string {
 		.trim();
 }
 
+const MANUAL_SKILL_PROMPT_PATTERN =
+	/^\[IMPORTANT: The user has invoked the "([^"\r\n]+)" skill, indicating they want you to follow its instructions\. The full skill content is loaded below\.\]\r?\n\r?\n/;
+
+
 export function approvedPlanAmendments(entries: readonly unknown[]): ApprovedPlanAmendment[] {
 	const references = indexedApprovedPlanReferences(entries);
 	const currentReference = references.at(-1);
@@ -504,6 +508,32 @@ export function recentConversation(entries: readonly unknown[]): ConversationExc
 		const entry = entries[index];
 		if (!entry || typeof entry !== "object") continue;
 		const record = entry as Record<string, unknown>;
+		if (
+			record.type === "custom_message" &&
+			record.customType === "skill-prompt" &&
+			record.attribution === "user" &&
+			record.display === true &&
+			typeof record.content === "string" &&
+			record.details &&
+			typeof record.details === "object"
+		) {
+			const details = record.details as Record<string, unknown>;
+			const match = record.content.match(MANUAL_SKILL_PROMPT_PATTERN);
+			if (
+				typeof details.name === "string" &&
+				typeof details.path === "string" &&
+				typeof details.lineCount === "number" &&
+				match?.[1] === details.name
+			) {
+				candidates.push({
+					index,
+					role: "user",
+					authoritative: true,
+					text: `Manual user skill invocation: ${details.name}\n\n${record.content}`,
+				});
+				continue;
+			}
+		}
 		if (record.type !== "message" || !record.message || typeof record.message !== "object") continue;
 		const message = record.message as Record<string, unknown>;
 		if (message.role === "assistant" && Array.isArray(message.content)) {
