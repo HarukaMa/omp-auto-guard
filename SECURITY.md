@@ -32,6 +32,8 @@ Auto Guard runs inside the OMP process and observes tool calls before execution.
 
 Auto Guard is not a security boundary. It does not isolate tools, constrain the host process, replace operating-system authorization, or guarantee that language-model judgments are correct.
 
+Classifier schema validation rejects malformed framing and fields, but it cannot establish that a valid `effectLevel` or `userAuthorization` judgment is true. Prompt injection in untrusted tool data can contribute to an incorrect but syntactically valid allow; this remains within the documented language-model judgment limitation rather than a guarantee of this extension.
+
 An attacker or failure that can modify OMP, disable extensions, bypass the tool-call event, alter this extension, or execute commands outside OMP is outside this threat model.
 Exact call binding does not snapshot referenced external state. The same path, branch, tag, URL, query selection, or remote name can resolve to different content after approval. Use immutable identifiers and conditional or versioned operations where supported. Treat residual time-of-check/time-of-use risk as outside the guarantees of generic argument binding.
 

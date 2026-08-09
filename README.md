@@ -119,6 +119,8 @@ Auto Guard is intended to reduce accidental high-consequence actions by a cooper
 - Users approving a harmful operation
 - Mutable resources changing after approval while the exact tool arguments remain unchanged
 
+Classifier schema validation establishes only that a response is well formed. A syntactically valid but incorrect `effectLevel` or `userAuthorization` judgment, including one influenced by prompt injection in untrusted tool data, can still produce an incorrect allow; this is part of the malicious-or-incorrect-classifier limitation above.
+
 Deterministic shell patterns remain defense in depth, not complete parsers. SQL is routed to dialect-aware semantic review instead of being treated as statically proven safe.
 Ordinary approval summaries deliberately limit conversation growth and may abbreviate long values. Database approvals show the complete redacted classifier input when it fits the classifier limit. Reject the call whenever the displayed information is insufficient for an informed decision.
 
