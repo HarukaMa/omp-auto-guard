@@ -43,7 +43,18 @@ Every tool call receives one static policy decision:
 - `deny`: block a narrowly defined catastrophic operation.
 - `classify`: send the call to the configured safety classifier.
 
+For semantically reviewed calls, the classifier reports an effect level instead of choosing the final verdict directly. Auto Guard derives the verdict as follows:
+
+- `bounded`: allow, regardless of semantic task scope or authorization.
+- `material`: allow only when the operation and target are authoritatively requested or approved; otherwise ask.
+- `unknown`: ask when a plausible material operational effect cannot be established from the concrete executable, command, arguments, and technical evidence.
+- `prohibited`: deny.
+
+Reversible repository-local edits, formatting, builds, tests, disposable test data, and established bounded verification are not approval boundaries merely because they are tangential to a plan. Their later execution, publication, push, or deployment is reviewed at that effect boundary. A loopback bind address is not sufficient evidence that a process is bounded: executable and command effects such as persistence, credential access, file writes, privilege, and outbound traffic still require classification.
+
 Empty, invalid, or provider-failed classifier responses are retried once within the original deadline. Exhausted retries, unavailable models, oversized inputs, and timeouts fail closed to `ask`.
+
+Classifier output is accepted only as one unwrapped JSON object with exactly the documented fields and scalar types. Leading or trailing prose, code fences, arrays, legacy `decision` fields, aliases, extra fields, invalid labels, and multiline reasons are treated as invalid and therefore fail closed.
 
 Approval identity is a SHA-256 digest over the approval epoch, working directory, tool name, and canonicalized arguments. A permit is single-use, expires five minutes after approval is recorded (not five minutes after the Ask is issued), and is invalidated by lifecycle changes, working-directory changes, or queued input or advice. While input is pending, statically proven non-sensitive reads and `todo` may proceed, but classified calls, Ask, and writes remain paused. `Review batch` grants no permit; it returns control to the agent to present one concrete revised batch for explicit user approval. Rejecting, timing out, redirecting to chat, entering custom Ask text, or changing protected Ask fields does not authorize the call.
 
@@ -93,7 +104,7 @@ Model classification can transmit the following to the resolved classifier provi
 
 Redaction is not a reliable data-loss-prevention mechanism. Commands, paths, SQL, conversation text, and model responses may contain sensitive data. Configure classifier providers and credentials accordingly.
 
-When audit logging is enabled, records include the classifier model, effort, latency, attempt count, normalized token usage, tool name, policy observation, raw model response, risk level, authorization assessment, and verdict. Retried failures and invalid responses include attempt diagnostics. `OMP_AUTO_GUARD_LOG_INCLUDE_CONTEXT=1` additionally records the classifier payload and full invalid response content blocks. Protect audit logs as sensitive data and do not commit them.
+When audit logging is enabled, records include the classifier model, effort, latency, attempt count, normalized token usage, tool name, policy observation, raw model response, effect level, risk level, authorization assessment, and derived verdict. Retried failures and invalid responses include attempt diagnostics. `OMP_AUTO_GUARD_LOG_INCLUDE_CONTEXT=1` additionally records the classifier payload and full invalid response content blocks. Protect audit logs as sensitive data and do not commit them.
 
 ## Security model and limitations
 

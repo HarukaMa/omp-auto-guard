@@ -889,21 +889,82 @@ describe("classifier boundary", () => {
 		);
 	});
 
-	test("accepts strict decisions and records optional risk dimensions", () => {
-		expect(parseClassifierVerdict('{"decision":"ask","category":"remote","reason":"shared target"}')).toEqual({
-			decision: "ask",
-			riskLevel: "unspecified",
-			userAuthorization: "unspecified",
-			category: "remote",
-			reason: "shared target",
+	test("derives decisions from effect level before authorization", () => {
+		expect(
+			parseClassifierVerdict(
+				'{"effectLevel":"bounded","riskLevel":"low","userAuthorization":"missing","category":"scope-expansion","reason":"The repository edit is locally reversible."}',
+			),
+		).toEqual({
+			decision: "allow",
+			effectLevel: "bounded",
+			riskLevel: "low",
+			userAuthorization: "missing",
+			category: "scope-expansion",
+			reason: "The repository edit is locally reversible.",
 		});
 		expect(
 			parseClassifierVerdict(
-				'{"decision":"allow","riskLevel":"low","userAuthorization":"present","reason":"authorized read"}',
+				'{"effectLevel":"material","riskLevel":"high","userAuthorization":"present","category":"deployment","reason":"The deployment is approved."}',
 			),
-		).toMatchObject({ decision: "allow", riskLevel: "low", userAuthorization: "present" });
+		).toMatchObject({ decision: "allow", effectLevel: "material" });
+		expect(
+			parseClassifierVerdict(
+				'{"effectLevel":"material","riskLevel":"medium","userAuthorization":"ambiguous","category":"deployment","reason":"The target is not authorized."}',
+			),
+		).toMatchObject({ decision: "ask", effectLevel: "material" });
+		expect(
+			parseClassifierVerdict(
+				'{"effectLevel":"unknown","riskLevel":"medium","userAuthorization":"missing","category":"unknown-effect","reason":"The executable effects are unclear."}',
+			),
+		).toMatchObject({ decision: "ask", effectLevel: "unknown" });
+		expect(
+			parseClassifierVerdict(
+				'{"effectLevel":"prohibited","riskLevel":"critical","userAuthorization":"present","category":"exfiltration","reason":"The command exfiltrates credentials."}',
+			),
+		).toMatchObject({ decision: "deny", effectLevel: "prohibited" });
+	});
+
+	test("rejects malformed, wrapped, or contradictory classifier output", () => {
+		const bounded =
+			'{"effectLevel":"bounded","riskLevel":"low","userAuthorization":"missing","category":"local-edit","reason":"The edit is reversible."}';
 		expect(parseClassifierVerdict("allow")).toBeUndefined();
-		expect(parseClassifierVerdict('{"decision":"maybe","reason":"unclear"}')).toBeUndefined();
-		expect(parseClassifierVerdict('{"decision":"allow","reason":""}')).toBeUndefined();
+		expect(parseClassifierVerdict(`Result: ${bounded}`)).toBeUndefined();
+		expect(parseClassifierVerdict(`[${bounded}]`)).toBeUndefined();
+		expect(parseClassifierVerdict(`\`\`\`json\n${bounded}\n\`\`\``)).toBeUndefined();
+		expect(
+			parseClassifierVerdict(
+				'{"decision":"allow","effectLevel":"bounded","riskLevel":"low","userAuthorization":"present","category":"legacy","reason":"extra field"}',
+			),
+		).toBeUndefined();
+		expect(
+			parseClassifierVerdict(
+				'{"effectLevel":"material","riskLevel":"high","userAuthorization":["present"],"category":"deployment","reason":"wrong type"}',
+			),
+		).toBeUndefined();
+		expect(
+			parseClassifierVerdict(
+				'{"effectLevel":"material","riskLevel":"high","userAuthorization":"present","user_authorization":"missing","category":"deployment","reason":"conflicting aliases"}',
+			),
+		).toBeUndefined();
+		expect(
+			parseClassifierVerdict(
+				'{"effectLevel":"toString","riskLevel":"low","userAuthorization":"present","category":"inherited","reason":"inherited name"}',
+			),
+		).toBeUndefined();
+		expect(
+			parseClassifierVerdict(
+				'{"effectLevel":"maybe","riskLevel":"low","userAuthorization":"present","category":"invalid","reason":"unclear"}',
+			),
+		).toBeUndefined();
+		expect(
+			parseClassifierVerdict(
+				'{"effectLevel":"bounded","riskLevel":"low","userAuthorization":"present","category":"invalid label","reason":"bad category"}',
+			),
+		).toBeUndefined();
+		expect(
+			parseClassifierVerdict(
+				'{"effectLevel":"bounded","riskLevel":"low","userAuthorization":"present","category":"invalid","reason":"two\\nlines"}',
+			),
+		).toBeUndefined();
 	});
 });

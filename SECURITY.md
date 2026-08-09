@@ -22,8 +22,10 @@ Do not include credentials, raw audit logs, private conversation content, or des
 Auto Guard runs inside the OMP process and observes tool calls before execution. Its goals are to:
 
 - Deny a narrow set of catastrophic operations deterministically.
-- Require semantic review for operations whose effects are not statically understood.
-- Require explicit approval for material consequences not already authorized.
+- Classify semantically reviewed calls as bounded, material, unknown, or prohibited before considering authorization.
+- Allow bounded effects without using semantic task scope as a blocking safety boundary.
+- Require explicit approval for known material consequences not already authorized.
+- Require review when a plausible material operational effect cannot be established.
 - Bind one approval to one exact canonical call, working directory, and approval epoch.
 - Invalidate permits at lifecycle boundaries, working-directory changes, and pending user input.
 - Fail closed when classification or approval cannot complete safely.
@@ -48,6 +50,7 @@ Native approval prompts contain an agent-supplied, non-authoritative rationale c
 - Use least-privilege credentials and accounts.
 - Keep backups or version control for mutable work.
 - Review deployments, database changes, permission changes, and credential operations.
+- Do not infer that a process is bounded solely from a loopback bind address; inspect its executable and command effects, including file writes, credentials, persistence, privilege, and outbound traffic.
 - Restart OMP after updating the extension; existing sessions do not hot-reload it.
 - Treat classifier `allow` as one defense-in-depth signal, not proof that an operation is safe.
 - Database SQL is reviewed as complete model input rather than split or parsed by a dialect-independent static lexer. Raw destructive keywords only focus classifier attention and do not establish whether text is executable, quoted, or commented.

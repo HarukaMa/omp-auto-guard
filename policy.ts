@@ -6,10 +6,13 @@ export interface GuardVerdict {
 	reason: string;
 }
 
+export type ClassifierEffectLevel = "bounded" | "material" | "unknown" | "prohibited";
+
 export interface ClassifierVerdict {
 	decision: "allow" | "ask" | "deny";
-	riskLevel: "low" | "medium" | "high" | "critical" | "unspecified";
-	userAuthorization: "present" | "missing" | "ambiguous" | "unspecified";
+	effectLevel: ClassifierEffectLevel;
+	riskLevel: "low" | "medium" | "high" | "critical";
+	userAuthorization: "present" | "missing" | "ambiguous";
 	category: string;
 	reason: string;
 	reviewId?: string;
@@ -856,28 +859,86 @@ export function classifierInputBytes(value: unknown): number {
 	return Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
 }
 
-const CLASSIFIER_DECISIONS: Record<string, true> = { allow: true, ask: true, deny: true };
-const CLASSIFIER_RISK_LEVELS: Record<string, true> = { low: true, medium: true, high: true, critical: true };
-const CLASSIFIER_AUTHORIZATIONS: Record<string, true> = { present: true, missing: true, ambiguous: true };
+const CLASSIFIER_EFFECT_LEVELS: Record<ClassifierEffectLevel, true> = {
+	bounded: true,
+	material: true,
+	unknown: true,
+	prohibited: true,
+};
+const CLASSIFIER_RISK_LEVELS: Record<ClassifierVerdict["riskLevel"], true> = {
+	low: true,
+	medium: true,
+	high: true,
+	critical: true,
+};
+const CLASSIFIER_AUTHORIZATIONS: Record<ClassifierVerdict["userAuthorization"], true> = {
+	present: true,
+	missing: true,
+	ambiguous: true,
+};
+const CLASSIFIER_VERDICT_KEYS: Record<string, true> = {
+	effectLevel: true,
+	riskLevel: true,
+	userAuthorization: true,
+	category: true,
+	reason: true,
+};
+const CLASSIFIER_VERDICT_KEY_COUNT = 5;
+const CLASSIFIER_CATEGORY = /^[a-z0-9][a-z0-9-]{0,63}$/i;
+
+function decisionForEffect(
+	effectLevel: ClassifierEffectLevel,
+	userAuthorization: ClassifierVerdict["userAuthorization"],
+): ClassifierVerdict["decision"] {
+	switch (effectLevel) {
+		case "bounded":
+			return "allow";
+		case "material":
+			return userAuthorization === "present" ? "allow" : "ask";
+		case "unknown":
+			return "ask";
+		case "prohibited":
+			return "deny";
+	}
+}
 
 export function parseClassifierVerdict(text: string): ClassifierVerdict | undefined {
-	const match = text.match(/\{[\s\S]*\}/);
-	if (!match) return undefined;
 	try {
-		const parsed = JSON.parse(match[0]) as Record<string, unknown>;
-		const decision = String(parsed.decision);
-		if (!CLASSIFIER_DECISIONS[decision]) return undefined;
-		if (typeof parsed.reason !== "string" || parsed.reason.trim().length === 0) return undefined;
-		const riskLevel = String(parsed.riskLevel ?? parsed.risk_level);
-		const userAuthorization = String(parsed.userAuthorization ?? parsed.user_authorization);
+		const parsed: unknown = JSON.parse(text.trim());
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+		const record = parsed as Record<string, unknown>;
+		const keys = Object.keys(record);
+		if (
+			keys.length !== CLASSIFIER_VERDICT_KEY_COUNT ||
+			keys.some(key => !Object.hasOwn(CLASSIFIER_VERDICT_KEYS, key))
+		) {
+			return undefined;
+		}
+		if (
+			typeof record.effectLevel !== "string" ||
+			!Object.hasOwn(CLASSIFIER_EFFECT_LEVELS, record.effectLevel) ||
+			typeof record.riskLevel !== "string" ||
+			!Object.hasOwn(CLASSIFIER_RISK_LEVELS, record.riskLevel) ||
+			typeof record.userAuthorization !== "string" ||
+			!Object.hasOwn(CLASSIFIER_AUTHORIZATIONS, record.userAuthorization) ||
+			typeof record.category !== "string" ||
+			!CLASSIFIER_CATEGORY.test(record.category) ||
+			typeof record.reason !== "string" ||
+			record.reason.trim().length === 0 ||
+			/[\r\n]/.test(record.reason)
+		) {
+			return undefined;
+		}
+		const effectLevel = record.effectLevel as ClassifierEffectLevel;
+		const riskLevel = record.riskLevel as ClassifierVerdict["riskLevel"];
+		const userAuthorization = record.userAuthorization as ClassifierVerdict["userAuthorization"];
 		return {
-			decision: decision as ClassifierVerdict["decision"],
-			riskLevel: CLASSIFIER_RISK_LEVELS[riskLevel] ? (riskLevel as ClassifierVerdict["riskLevel"]) : "unspecified",
-			userAuthorization: CLASSIFIER_AUTHORIZATIONS[userAuthorization]
-				? (userAuthorization as ClassifierVerdict["userAuthorization"])
-				: "unspecified",
-			category: typeof parsed.category === "string" ? parsed.category.slice(0, 64) : "classified",
-			reason: parsed.reason.trim().slice(0, 300),
+			decision: decisionForEffect(effectLevel, userAuthorization),
+			effectLevel,
+			riskLevel,
+			userAuthorization,
+			category: record.category,
+			reason: record.reason.trim().slice(0, 300),
 		};
 	} catch {
 		return undefined;
