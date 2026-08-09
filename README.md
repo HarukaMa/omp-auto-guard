@@ -54,7 +54,7 @@ Reversible repository-local edits, formatting, builds, tests, disposable test da
 
 Empty, invalid, or provider-failed classifier responses are retried once within the original deadline. Exhausted retries, unavailable models, oversized inputs, and timeouts fail closed to `ask`.
 
-Classifier output is accepted only as one unwrapped JSON object with exactly the documented fields and scalar types. Leading or trailing prose, code fences, arrays, legacy `decision` fields, aliases, extra fields, invalid labels, and multiline reasons are treated as invalid and therefore fail closed.
+Classifier output is accepted only as one unwrapped JSON object with exactly the documented fields and scalar types. Leading or trailing prose, code fences, arrays, duplicate keys, legacy `decision` fields, aliases, extra fields, invalid labels, and multiline reasons are treated as invalid and therefore fail closed.
 
 Approval identity is a SHA-256 digest over the approval epoch, working directory, tool name, and canonicalized arguments. A permit is single-use, expires five minutes after approval is recorded (not five minutes after the Ask is issued), and is invalidated by lifecycle changes, working-directory changes, or queued input or advice. While input is pending, statically proven non-sensitive reads and `todo` may proceed, but classified calls, Ask, and writes remain paused. `Review batch` grants no permit; it returns control to the agent to present one concrete revised batch for explicit user approval. Rejecting, timing out, redirecting to chat, entering custom Ask text, or changing protected Ask fields does not authorize the call.
 

@@ -902,9 +902,62 @@ function decisionForEffect(
 	}
 }
 
+function hasDuplicateTopLevelJsonKeys(text: string): boolean {
+	const seen = new Set<string>();
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	let expectingKey = false;
+	let keyStart = -1;
+
+	for (let index = 0; index < text.length; index++) {
+		const character = text[index];
+		if (inString) {
+			if (escaped) {
+				escaped = false;
+				continue;
+			}
+			if (character === "\\") {
+				escaped = true;
+				continue;
+			}
+			if (character === '"') {
+				inString = false;
+				if (keyStart >= 0) {
+					const key = JSON.parse(text.slice(keyStart, index + 1)) as string;
+					if (seen.has(key)) return true;
+					seen.add(key);
+					keyStart = -1;
+					expectingKey = false;
+				}
+			}
+			continue;
+		}
+
+		if (character === '"') {
+			inString = true;
+			if (depth === 1 && expectingKey) keyStart = index;
+			continue;
+		}
+		if (character === "{" || character === "[") {
+			depth++;
+			if (depth === 1 && character === "{") expectingKey = true;
+			continue;
+		}
+		if (character === "}" || character === "]") {
+			depth--;
+			continue;
+		}
+		if (character === "," && depth === 1) expectingKey = true;
+	}
+	return false;
+}
+
 export function parseClassifierVerdict(text: string): ClassifierVerdict | undefined {
 	try {
-		const parsed: unknown = JSON.parse(text.trim());
+		const serialized = text.trim();
+		if (hasDuplicateTopLevelJsonKeys(serialized)) return undefined;
+		const parsed: unknown = JSON.parse(serialized);
 		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
 		const record = parsed as Record<string, unknown>;
 		const keys = Object.keys(record);

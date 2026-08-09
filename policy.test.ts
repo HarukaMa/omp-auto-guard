@@ -948,6 +948,16 @@ describe("classifier boundary", () => {
 		).toBeUndefined();
 		expect(
 			parseClassifierVerdict(
+				'{"effectLevel":"material","riskLevel":"high","userAuthorization":"missing","userAuthorization":"present","category":"deployment","reason":"duplicate authorization"}',
+			),
+		).toBeUndefined();
+		expect(
+			parseClassifierVerdict(
+				'{"effectLevel":"material","riskLevel":"high","userAuthorization":"missing","\\u0075serAuthorization":"present","category":"deployment","reason":"escaped duplicate authorization"}',
+			),
+		).toBeUndefined();
+		expect(
+			parseClassifierVerdict(
 				'{"effectLevel":"toString","riskLevel":"low","userAuthorization":"present","category":"inherited","reason":"inherited name"}',
 			),
 		).toBeUndefined();
