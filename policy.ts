@@ -884,7 +884,14 @@ const CLASSIFIER_VERDICT_KEYS: Record<string, true> = {
 	reason: true,
 };
 const CLASSIFIER_VERDICT_KEY_COUNT = 5;
+const CLASSIFIER_CATEGORY_INPUT = /^[a-z0-9 _-]{1,64}$/i;
 const CLASSIFIER_CATEGORY = /^[a-z0-9][a-z0-9-]{0,63}$/i;
+
+function normalizeClassifierCategory(value: unknown): string | undefined {
+	if (typeof value !== "string" || !CLASSIFIER_CATEGORY_INPUT.test(value)) return undefined;
+	const normalized = value.trim().toLowerCase().replace(/[ _-]+/g, "-");
+	return CLASSIFIER_CATEGORY.test(normalized) ? normalized : undefined;
+}
 
 function decisionForEffect(
 	effectLevel: ClassifierEffectLevel,
@@ -961,6 +968,7 @@ export function parseClassifierVerdict(text: string): ClassifierVerdict | undefi
 		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
 		const record = parsed as Record<string, unknown>;
 		const keys = Object.keys(record);
+		const category = normalizeClassifierCategory(record.category);
 		if (
 			keys.length !== CLASSIFIER_VERDICT_KEY_COUNT ||
 			keys.some(key => !Object.hasOwn(CLASSIFIER_VERDICT_KEYS, key))
@@ -974,8 +982,7 @@ export function parseClassifierVerdict(text: string): ClassifierVerdict | undefi
 			!Object.hasOwn(CLASSIFIER_RISK_LEVELS, record.riskLevel) ||
 			typeof record.userAuthorization !== "string" ||
 			!Object.hasOwn(CLASSIFIER_AUTHORIZATIONS, record.userAuthorization) ||
-			typeof record.category !== "string" ||
-			!CLASSIFIER_CATEGORY.test(record.category) ||
+			category === undefined ||
 			typeof record.reason !== "string" ||
 			record.reason.trim().length === 0 ||
 			/[\r\n]/.test(record.reason)
@@ -990,7 +997,7 @@ export function parseClassifierVerdict(text: string): ClassifierVerdict | undefi
 			effectLevel,
 			riskLevel,
 			userAuthorization,
-			category: record.category,
+			category,
 			reason: record.reason.trim().slice(0, 300),
 		};
 	} catch {

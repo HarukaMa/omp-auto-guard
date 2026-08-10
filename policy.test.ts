@@ -924,6 +924,19 @@ describe("classifier boundary", () => {
 		).toMatchObject({ decision: "deny", effectLevel: "prohibited" });
 	});
 
+	test("normalizes benign classifier category separators", () => {
+		expect(
+			parseClassifierVerdict(
+				'{"effectLevel":"bounded","riskLevel":"low","userAuthorization":"present","category":"read-only inspection","reason":"The call only reads local state."}',
+			),
+		).toMatchObject({ decision: "allow", category: "read-only-inspection" });
+		expect(
+			parseClassifierVerdict(
+				'{"effectLevel":"bounded","riskLevel":"low","userAuthorization":"missing","category":"documentation_lookup","reason":"The call only reads documentation."}',
+			),
+		).toMatchObject({ decision: "allow", category: "documentation-lookup" });
+	});
+
 	test("rejects malformed, wrapped, or contradictory classifier output", () => {
 		const bounded =
 			'{"effectLevel":"bounded","riskLevel":"low","userAuthorization":"missing","category":"local-edit","reason":"The edit is reversible."}';
@@ -968,7 +981,7 @@ describe("classifier boundary", () => {
 		).toBeUndefined();
 		expect(
 			parseClassifierVerdict(
-				'{"effectLevel":"bounded","riskLevel":"low","userAuthorization":"present","category":"invalid label","reason":"bad category"}',
+				'{"effectLevel":"bounded","riskLevel":"low","userAuthorization":"present","category":"invalid/label","reason":"bad category"}',
 			),
 		).toBeUndefined();
 		expect(
