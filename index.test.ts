@@ -326,8 +326,10 @@ async function approveHandshake(
 	askToolCallId: string,
 ): Promise<{ askInput: AskInput; update: ToolResultUpdate | undefined }> {
 	const askInput = await beginHandshake(guard, call, askToolCallId);
+	const approveOption = askInput.questions[0]?.options[0]?.label;
+	if (!approveOption) throw new Error("expected one approval option");
 	const update = await guard.toolResultHandler(
-		askResult(askToolCallId, askInput, askDetails(askInput, ["Approve once"], { timedOut: false })),
+		askResult(askToolCallId, askInput, askDetails(askInput, [approveOption], { timedOut: false })),
 	);
 	return { askInput, update };
 }
@@ -1571,6 +1573,189 @@ describe("native Ask approval retry", () => {
 			expect(await guard.toolCallHandler(call, guard.context)).toBeUndefined();
 		}
 		expect(guard.confirmCalls).toBe(0);
+	});
+
+	test("remembers one successful approved Hub launch for scoped lifecycle control", async () => {
+		const guard = setupGuard();
+		const payloads: Record<string, unknown>[] = [];
+		guard.setModel({ provider: "openai-codex", id: "gpt-5.6-sol", reasoning: true });
+		setCompleteImplementation((...args) => {
+			const request = args[1] as { messages: [{ content: [{ text: string }] }] };
+			payloads.push(JSON.parse(request.messages[0].content[0].text));
+			return Promise.resolve({
+				content: [
+					{
+						type: "text",
+						text: '{"effectLevel":"unknown","riskLevel":"medium","userAuthorization":"ambiguous","category":"local-service-start","reason":"The process effects require initial approval."}',
+					},
+				],
+				responseId: "hub-review",
+				stopReason: "stop",
+				usage: { input: 10, output: 10 },
+			});
+		});
+		const start: ToolCall = {
+			toolCallId: "hub-start-initial",
+			toolName: "hub",
+			input: {
+				i: "Start the local review service",
+				op: "start",
+				name: "web",
+				application: "bun",
+				args: ["run", "dev"],
+				cwd: "C:/workspace",
+				ready: { log: "ready" },
+			},
+		};
+
+		try {
+			const { askInput, update } = await approveHandshake(guard, start, "hub-start-ask");
+			expect(askInput.questions[0]?.options[0]?.label).toBe("Approve process");
+			expect(askInput.questions[0]?.options[0]?.description).toContain("lifecycle control");
+			expect(update?.content?.at(-1)?.text).toContain("will be remembered");
+
+			const retry = { ...start, toolCallId: "hub-start-retry" };
+			expect(await guard.toolCallHandler(retry, guard.context)).toBeUndefined();
+			expect(
+				await guard.toolResultHandler({
+					toolCallId: retry.toolCallId,
+					toolName: retry.toolName,
+					input: retry.input,
+					content: [{ type: "text", text: "Started web: ready" }],
+					details: {
+						op: "start",
+						daemon: { name: "web", state: "ready" },
+						timedOut: false,
+					},
+					isError: false,
+				}),
+			).toBeUndefined();
+
+			guard.sessionHandlers.get("agent_end")!();
+			for (const [index, input] of [
+				{ i: "Stop the review service", op: "stop", name: "web", timeout: 5 },
+				{ i: "Restart the review service", op: "restart", name: "web" },
+				{ i: "Terminate the review service", op: "send", name: "web", signal: "SIGTERM" },
+			].entries()) {
+				expect(
+					await guard.toolCallHandler(
+						{ toolCallId: `hub-lifecycle-${index}`, toolName: "hub", input },
+						guard.context,
+					),
+				).toBeUndefined();
+			}
+			expect(
+				await guard.toolCallHandler(
+					{
+						...start,
+						toolCallId: "hub-same-launch",
+						input: { ...start.input, i: "Start the same retained launch again" },
+					},
+					guard.context,
+				),
+			).toBeUndefined();
+			expect(payloads).toHaveLength(1);
+
+			const changedLaunch = await guard.toolCallHandler(
+				{
+					...start,
+					toolCallId: "hub-changed-launch",
+					input: { ...start.input, args: ["run", "prod"] },
+				},
+				guard.context,
+			);
+			expect(changedLaunch?.block).toBe(true);
+			expect(payloads[1]?.supervisedProcess).toBeDefined();
+
+			const processInput = await guard.toolCallHandler(
+				{
+					toolCallId: "hub-process-input",
+					toolName: "hub",
+					input: { i: "Send a command", op: "send", name: "web", text: "reload" },
+				},
+				guard.context,
+			);
+			expect(processInput?.block).toBe(true);
+			expect(payloads[2]?.supervisedProcess).toEqual({
+				name: "web",
+				launchArguments: {
+					op: "start",
+					name: "web",
+					application: "bun",
+					args: ["run", "dev"],
+					cwd: "C:/workspace",
+					ready: { log: "ready" },
+				},
+			});
+
+			guard.sessionHandlers.get("session_before_switch")!();
+			const afterSessionChange = await guard.toolCallHandler(
+				{
+					toolCallId: "hub-stop-after-session-change",
+					toolName: "hub",
+					input: { i: "Stop the review service", op: "stop", name: "web" },
+				},
+				guard.context,
+			);
+			expect(afterSessionChange?.block).toBe(true);
+			expect(payloads[3]).not.toHaveProperty("supervisedProcess");
+		} finally {
+			setCompleteImplementation();
+		}
+	});
+
+	test("does not remember a failed approved Hub launch", async () => {
+		const guard = setupGuard();
+		const payloads: Record<string, unknown>[] = [];
+		guard.setModel({ provider: "openai-codex", id: "gpt-5.6-sol", reasoning: true });
+		setCompleteImplementation((...args) => {
+			const request = args[1] as { messages: [{ content: [{ text: string }] }] };
+			payloads.push(JSON.parse(request.messages[0].content[0].text));
+			return Promise.resolve({
+				content: [
+					{
+						type: "text",
+						text: '{"effectLevel":"unknown","riskLevel":"medium","userAuthorization":"ambiguous","category":"local-service-start","reason":"The process effects require initial approval."}',
+					},
+				],
+				responseId: "hub-review",
+				stopReason: "stop",
+				usage: { input: 10, output: 10 },
+			});
+		});
+		const start: ToolCall = {
+			toolCallId: "failed-hub-start",
+			toolName: "hub",
+			input: { i: "Start review service", op: "start", name: "web", application: "bun", args: ["run", "dev"] },
+		};
+
+		try {
+			await approveHandshake(guard, start, "failed-hub-start-ask");
+			const retry = { ...start, toolCallId: "failed-hub-start-retry" };
+			expect(await guard.toolCallHandler(retry, guard.context)).toBeUndefined();
+			await guard.toolResultHandler({
+				toolCallId: retry.toolCallId,
+				toolName: retry.toolName,
+				input: retry.input,
+				content: [{ type: "text", text: "process exited before readiness" }],
+				details: { op: "start", daemon: { name: "web", state: "failed" } },
+				isError: false,
+			});
+
+			const stop = await guard.toolCallHandler(
+				{
+					toolCallId: "failed-hub-stop",
+					toolName: "hub",
+					input: { i: "Stop failed service", op: "stop", name: "web" },
+				},
+				guard.context,
+			);
+			expect(stop?.block).toBe(true);
+			expect(payloads).toHaveLength(2);
+			expect(payloads[1]).not.toHaveProperty("supervisedProcess");
+		} finally {
+			setCompleteImplementation();
+		}
 	});
 
 	test("keeps Hub process control blocked headlessly", async () => {

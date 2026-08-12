@@ -26,8 +26,9 @@ Auto Guard runs inside the OMP process and observes tool calls before execution.
 - Allow bounded effects without using semantic task scope as a blocking safety boundary.
 - Require explicit approval for known material consequences not already authorized.
 - Require review when a plausible material operational effect cannot be established.
-- Bind one approval to one exact canonical call, working directory, and approval epoch.
-- Invalidate permits at lifecycle boundaries, working-directory changes, and pending user input.
+- Bind each ordinary approval permit to one exact canonical call, working directory, and approval epoch.
+- Treat a successfully permitted Hub launch as a separate session-and-working-directory-scoped authorization for only its unchanged launch and name-bound stop, restart, or signal operations.
+- Invalidate ordinary permits at agent and session lifecycle boundaries, working-directory changes, and pending user input; clear supervised-process authorization at session lifecycle boundaries.
 - Fail closed when classification or approval cannot complete safely.
 
 Auto Guard is not a security boundary. It does not isolate tools, constrain the host process, replace operating-system authorization, or guarantee that language-model judgments are correct.
@@ -38,6 +39,8 @@ An attacker or failure that can modify OMP, disable extensions, bypass the tool-
 Exact call binding does not snapshot referenced external state. The same path, branch, tag, URL, query selection, or remote name can resolve to different content after approval. Use immutable identifiers and conditional or versioned operations where supported. Treat residual time-of-check/time-of-use risk as outside the guarantees of generic argument binding.
 
 Plan Mode support trusts only the exact core-generated approval and active-plan reference message shapes, not arbitrary developer messages or tool results. The referenced plan is snapshotted before the next tool executes and remains the immutable authorization baseline. Concrete inline assistant plans become bounded additive amendments only when paired with a later non-synthetic user approval after the current Plan Mode approval marker. If a post-compaction reference is present, amendment recency is measured from the original approval for the same plan. If OMP restarts before Auto Guard captured the baseline, no approval-time digest is available; the extension must snapshot the file identified by OMP's active plan reference.
+
+Supervised-process authorization is recorded only after a permitted `hub start` returns a successful matching result. A failed or mismatched result records nothing. The record retains the exact operational launch arguments in memory, excludes the non-operational intent label from identity, and never authorizes changed arguments, another process name, or arbitrary process text/keys. Native launch approval prompts disclose this continuation. This scope intentionally survives agent turn boundaries to avoid repeated prompts, but it does not survive session start, switch, branch, or tree boundaries.
 
 ## Sensitive data
 
