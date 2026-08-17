@@ -440,9 +440,13 @@ describe("classifier conversation context", () => {
 		expect(combined).toContain("Restart api-worker in production");
 		expect(combined).toContain("Plan-batch authorization approved");
 		expect(selected.reduce((sum, message) => sum + message.text.length, 0)).toBeLessThanOrEqual(12000);
-		expect(
-			authorizationDecisions(entries).map(({ proposal, response }) => ({ proposal, response })),
-		).toEqual([{ proposal: approvedPlan, response: "Plan-batch authorization approved." }]);
+		const decisions = authorizationDecisions(entries);
+		expect(decisions[0]).toMatchObject({ kind: "user", response: originalRequest });
+		expect(decisions.at(-1)).toMatchObject({
+			kind: "conversation",
+			proposal: approvedPlan,
+			response: "Plan-batch authorization approved.",
+		});
 	});
 
 	test("treats only host-shaped user skill prompts as authoritative", () => {
@@ -648,6 +652,41 @@ describe("classifier conversation context", () => {
 		expect(decisions.map(decision => decision.sequence)).toEqual(
 			decisions.map(decision => decision.sequence).sort((left, right) => left - right),
 		);
+
+		const standaloneUsers = [
+			{
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "Hold deployment" }] },
+			},
+			...Array.from({ length: 8 }, (_, index) => ({
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: `Update ${index}` }] },
+			})),
+		];
+		const standaloneDecisions = authorizationDecisions([askCall, askResult, ...standaloneUsers]);
+		const standaloneAsk = standaloneDecisions.find(decision => decision.kind === "ask");
+		const hold = standaloneDecisions.find(decision => decision.response === "Hold deployment");
+		expect(standaloneAsk).toBeDefined();
+		expect(hold).toMatchObject({ kind: "user", response: "Hold deployment" });
+		expect(hold?.proposal).toBeUndefined();
+		expect(hold?.sequence).toBeGreaterThan(standaloneAsk?.sequence ?? Number.MAX_SAFE_INTEGER);
+
+		const overflowStandaloneUsers = [
+			standaloneUsers[0],
+			...Array.from({ length: 17 }, (_, index) => ({
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: `Update ${index}` }] },
+			})),
+		];
+		const overflowStandaloneDecisions = authorizationDecisions([
+			askCall,
+			askResult,
+			...overflowStandaloneUsers,
+		]);
+		expect(overflowStandaloneDecisions.some(decision => decision.kind === "ask")).toBe(false);
+		expect(overflowStandaloneDecisions.some(decision => decision.response === "Hold deployment")).toBe(false);
+		expect(overflowStandaloneDecisions).toHaveLength(16);
+		expect(overflowStandaloneDecisions[0]?.response).toBe("Update 1");
 
 		const overflowConversation = Array.from({ length: 17 }, (_, index) => [
 			{

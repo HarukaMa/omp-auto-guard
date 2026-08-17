@@ -32,9 +32,9 @@ export interface TechnicalExcerpt {
 }
 
 export interface AuthorizationDecision {
-	kind: "ask" | "conversation";
+	kind: "ask" | "conversation" | "user";
 	sequence: number;
-	proposal: string;
+	proposal?: string;
 	response: string;
 }
 
@@ -467,7 +467,7 @@ export function authorizationDecisions(entries: readonly unknown[]): Authorizati
 	const assistantMessages: Array<{ index: number; text: string }> = [];
 	const askCalls = new Map<string, AskCallContext>();
 	const askDecisions: AuthorizationDecision[] = [];
-	const conversationDecisions: AuthorizationDecision[] = [];
+	const userDecisions: AuthorizationDecision[] = [];
 	for (let index = baselineIndex + 1; index < entries.length; index++) {
 		const entry = entries[index];
 		if (!entry || typeof entry !== "object") continue;
@@ -508,10 +508,13 @@ export function authorizationDecisions(entries: readonly unknown[]): Authorizati
 
 		if (message.role !== "user" || message.synthetic === true) continue;
 		const response = plainMessageText(message);
-		const proposal = assistantMessages.at(-1)?.text;
-		if (proposal && response) {
-			conversationDecisions.push({ kind: "conversation", sequence: index, proposal, response });
-		}
+		if (!response) continue;
+		const proposal = assistantMessages.at(-1);
+		userDecisions.push(
+			proposal?.index === index - 1
+				? { kind: "conversation", sequence: index, proposal: proposal.text, response }
+				: { kind: "user", sequence: index, response },
+		);
 	}
 
 	const select = (
@@ -533,10 +536,10 @@ export function authorizationDecisions(entries: readonly unknown[]): Authorizati
 
 	const retained = [
 		...select(askDecisions, 8, MAX_CLASSIFIER_INPUT_BYTES / 2),
-		...select(conversationDecisions, 16, MAX_CLASSIFIER_INPUT_BYTES / 4),
+		...select(userDecisions, 16, MAX_CLASSIFIER_INPUT_BYTES / 4),
 	];
 	const retainedSet = new Set(retained);
-	const latestOmittedSequence = [...askDecisions, ...conversationDecisions].reduce(
+	const latestOmittedSequence = [...askDecisions, ...userDecisions].reduce(
 		(latest, decision) => retainedSet.has(decision) ? latest : Math.max(latest, decision.sequence),
 		-1,
 	);
