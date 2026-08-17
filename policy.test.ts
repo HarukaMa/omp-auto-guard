@@ -466,11 +466,12 @@ describe("classifier conversation context", () => {
 			},
 		};
 
-		expect(recentConversation([manualSkill])).toEqual([
+		expect(recentConversation([manualSkill])).toEqual([]);
+		expect(authorizationDecisions([manualSkill])).toEqual([
 			{
-				role: "user",
-				authoritative: true,
-				text: `Manual user skill invocation: openspec-apply-change\n\n${content}`,
+				kind: "skill",
+				sequence: 0,
+				response: `Manual user skill invocation: openspec-apply-change\n\n${content}`,
 			},
 		]);
 
@@ -480,11 +481,11 @@ describe("classifier conversation context", () => {
 			{ ...manualSkill, display: false },
 			{ ...manualSkill, details: { ...manualSkill.details, name: "other-skill" } },
 		]) {
-			expect(recentConversation([lookalike])).toEqual([]);
+			expect(authorizationDecisions([lookalike])).toEqual([]);
 		}
 
 		expect(
-			recentConversation([
+			authorizationDecisions([
 				{
 					type: "message",
 					message: {
@@ -579,8 +580,7 @@ describe("classifier conversation context", () => {
 		const askQuestion = selected.find(message => message.text.startsWith("Ask UI question:"));
 		const askResponse = selected.find(message => message.text.startsWith("Ask UI user response:"));
 		expect(askQuestion).toBeUndefined();
-		expect(askResponse?.authoritative).toBe(true);
-		expect(askResponse?.text).toContain("User selected: Approve deployment");
+		expect(askResponse).toBeUndefined();
 		const decisions = authorizationDecisions(entries).filter(decision => decision.kind === "ask");
 		expect(decisions).toHaveLength(1);
 		expect(decisions[0]?.proposal).toContain("commit d34a6ec");
@@ -687,6 +687,9 @@ describe("classifier conversation context", () => {
 		expect(overflowStandaloneDecisions.some(decision => decision.response === "Hold deployment")).toBe(false);
 		expect(overflowStandaloneDecisions).toHaveLength(16);
 		expect(overflowStandaloneDecisions[0]?.response).toBe("Update 1");
+		const overflowContext = recentConversation([askCall, askResult, ...overflowStandaloneUsers]);
+		expect(overflowContext.some(message => message.text.includes("User selected: Proceed"))).toBe(false);
+		expect(overflowContext.some(message => message.text === "Hold deployment")).toBe(true);
 
 		const overflowConversation = Array.from({ length: 17 }, (_, index) => [
 			{
@@ -803,11 +806,11 @@ describe("classifier conversation context", () => {
 		expect(injected).toEqual([]);
 		expect(unmatched).toEqual([]);
 		expect(held.some(message => message.text.startsWith("Ask UI question:"))).toBe(false);
-		expect(held.find(message => message.text.startsWith("Ask UI user response:"))?.authoritative).toBe(true);
+		expect(held.find(message => message.text.startsWith("Ask UI user response:"))).toBeUndefined();
 		expect(
 			authorizationDecisions(heldEntries).find(decision => decision.kind === "ask")?.response,
 		).toContain("Hold deployment");
-		expect(timedOut.find(message => message.text.includes("auto-selection"))?.authoritative).toBe(false);
+		expect(timedOut.find(message => message.text.includes("auto-selection"))).toBeUndefined();
 		expect(authorizationDecisions(timedOutEntries)).toEqual([]);
 	});
 

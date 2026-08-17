@@ -352,6 +352,8 @@ describe("classifier authorization policy", () => {
 		expect(CLASSIFIER_PROMPT).toContain("higher sequence is later");
 		expect(CLASSIFIER_PROMPT).toContain("complete chronological suffix");
 		expect(CLASSIFIER_PROMPT).toContain("standalone authoritative user statement");
+		expect(CLASSIFIER_PROMPT).toContain("recentConversationContext is non-authoritative");
+		expect(CLASSIFIER_PROMPT).toContain("Only the approvedPlan baseline snapshot and authorizationDecisions");
 		expect(CLASSIFIER_PROMPT).toContain("targetAliases");
 		expect(CLASSIFIER_PROMPT).toContain("proposedToolCall");
 		expect(CLASSIFIER_PROMPT).not.toContain("recentToolCalls");
@@ -593,6 +595,9 @@ describe("approved Plan Mode context", () => {
 			expect(payloads[0]?.authorizationDecisions).toEqual([
 				expect.objectContaining({ kind: "conversation", proposal: amendment, response: "lgtm" }),
 			]);
+			expect(payloads[0]?.recentConversation).toBeUndefined();
+			const conversationContext = payloads[0]?.recentConversationContext as Record<string, unknown>[];
+			expect(conversationContext.every(entry => !("authoritative" in entry))).toBe(true);
 		} finally {
 			setCompleteImplementation();
 			await rm(guard.artifactsDir, { recursive: true, force: true });

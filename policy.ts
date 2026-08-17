@@ -32,7 +32,7 @@ export interface TechnicalExcerpt {
 }
 
 export interface AuthorizationDecision {
-	kind: "ask" | "conversation" | "user";
+	kind: "ask" | "conversation" | "skill" | "user";
 	sequence: number;
 	proposal?: string;
 	response: string;
@@ -445,6 +445,31 @@ function plainMessageText(message: Record<string, unknown>): string {
 const MANUAL_SKILL_PROMPT_PATTERN =
 	/^\[IMPORTANT: The user has invoked the "([^"\r\n]+)" skill, indicating they want you to follow its instructions\. The full skill content is loaded below\.\]\r?\n\r?\n/;
 
+function manualSkillInvocationText(record: Record<string, unknown>): string | undefined {
+	if (
+		record.type !== "custom_message" ||
+		record.customType !== "skill-prompt" ||
+		record.attribution !== "user" ||
+		record.display !== true ||
+		typeof record.content !== "string" ||
+		!record.details ||
+		typeof record.details !== "object"
+	) {
+		return undefined;
+	}
+	const details = record.details as Record<string, unknown>;
+	const match = record.content.match(MANUAL_SKILL_PROMPT_PATTERN);
+	if (
+		typeof details.name !== "string" ||
+		typeof details.path !== "string" ||
+		typeof details.lineCount !== "number" ||
+		match?.[1] !== details.name
+	) {
+		return undefined;
+	}
+	return `Manual user skill invocation: ${details.name}\n\n${record.content}`;
+}
+
 
 export function authorizationDecisions(entries: readonly unknown[]): AuthorizationDecision[] {
 	const references = indexedApprovedPlanReferences(entries);
@@ -472,6 +497,11 @@ export function authorizationDecisions(entries: readonly unknown[]): Authorizati
 		const entry = entries[index];
 		if (!entry || typeof entry !== "object") continue;
 		const record = entry as Record<string, unknown>;
+		const manualSkill = manualSkillInvocationText(record);
+		if (manualSkill) {
+			userDecisions.push({ kind: "skill", sequence: index, response: manualSkill });
+			continue;
+		}
 		if (record.type !== "message" || !record.message || typeof record.message !== "object") continue;
 		const message = record.message as Record<string, unknown>;
 
@@ -550,74 +580,12 @@ export function authorizationDecisions(entries: readonly unknown[]): Authorizati
 
 export function recentConversation(entries: readonly unknown[]): ConversationExcerpt[] {
 	const candidates: ConversationCandidate[] = [];
-	const askCalls = new Map<string, AskCallContext>();
 	for (let index = 0; index < entries.length; index++) {
 		const entry = entries[index];
 		if (!entry || typeof entry !== "object") continue;
 		const record = entry as Record<string, unknown>;
-		if (
-			record.type === "custom_message" &&
-			record.customType === "skill-prompt" &&
-			record.attribution === "user" &&
-			record.display === true &&
-			typeof record.content === "string" &&
-			record.details &&
-			typeof record.details === "object"
-		) {
-			const details = record.details as Record<string, unknown>;
-			const match = record.content.match(MANUAL_SKILL_PROMPT_PATTERN);
-			if (
-				typeof details.name === "string" &&
-				typeof details.path === "string" &&
-				typeof details.lineCount === "number" &&
-				match?.[1] === details.name
-			) {
-				candidates.push({
-					index,
-					role: "user",
-					authoritative: true,
-					text: `Manual user skill invocation: ${details.name}\n\n${record.content}`,
-				});
-				continue;
-			}
-		}
 		if (record.type !== "message" || !record.message || typeof record.message !== "object") continue;
 		const message = record.message as Record<string, unknown>;
-		if (message.role === "assistant" && Array.isArray(message.content)) {
-			for (const item of message.content) {
-				const askCall = parseAskCall(item);
-				if (askCall) askCalls.set(askCall.id, askCall);
-			}
-		}
-		if (
-			message.role === "toolResult" &&
-			message.toolName === "ask" &&
-			typeof message.toolCallId === "string" &&
-			askCalls.has(message.toolCallId)
-		) {
-			const askCall = askCalls.get(message.toolCallId)!;
-			if (askCall.questions.some(question => question.id.startsWith("omp-auto-guard:"))) continue;
-			const answers = parseAskAnswers(message, askCall);
-			for (let answerIndex = 0; answerIndex < answers.length; answerIndex++) {
-				const answer = answers[answerIndex]!;
-				const denominator = answers.length * 2 + 1;
-				const questionIndex = index + (answerIndex * 2 + 1) / denominator;
-				candidates.push({
-					index: questionIndex,
-					role: "assistant",
-					authoritative: false,
-					text: formatAskQuestion(answer),
-				});
-				candidates.push({
-					index: index + (answerIndex * 2 + 2) / denominator,
-					pairedAssistantIndex: questionIndex,
-					role: "user",
-					authoritative: !answer.timedOut,
-					text: formatAskResponse(answer),
-				});
-			}
-			continue;
-		}
 		if ((message.role !== "user" && message.role !== "assistant") || !Array.isArray(message.content)) continue;
 		const text = message.content
 			.filter(item => item && typeof item === "object" && (item as Record<string, unknown>).type === "text")
