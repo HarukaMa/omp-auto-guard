@@ -31,14 +31,11 @@ export interface TechnicalExcerpt {
 	text: string;
 }
 
-export interface ToolCallExcerpt {
-	toolName: string;
-	arguments: string;
-}
-
-export interface ApprovedPlanAmendment {
-	approval: string;
-	content: string;
+export interface AuthorizationDecision {
+	kind: "ask" | "conversation";
+	sequence: number;
+	proposal: string;
+	response: string;
 }
 
 export interface ApprovedPlanReference {
@@ -420,7 +417,6 @@ export function approvedPlanReference(entries: readonly unknown[]): ApprovedPlan
 		: undefined;
 }
 
-const APPROVAL_REFERENCE_PATTERN = /(?:^|\b)(?:approv(?:e|ed|al)|authoriz(?:e|ed|ation)|plan[- ]batch|lgtm|proceed|go ahead|do it|continue|execute|ship it|let'?s do (?:it|this))(?:\b|$)/i;
 
 type ConversationCandidate = ConversationExcerpt & {
 	index: number;
@@ -450,7 +446,7 @@ const MANUAL_SKILL_PROMPT_PATTERN =
 	/^\[IMPORTANT: The user has invoked the "([^"\r\n]+)" skill, indicating they want you to follow its instructions\. The full skill content is loaded below\.\]\r?\n\r?\n/;
 
 
-export function approvedPlanAmendments(entries: readonly unknown[]): ApprovedPlanAmendment[] {
+export function authorizationDecisions(entries: readonly unknown[]): AuthorizationDecision[] {
 	const references = indexedApprovedPlanReferences(entries);
 	const currentReference = references.at(-1);
 	let baselineIndex = currentReference?.index ?? -1;
@@ -469,39 +465,84 @@ export function approvedPlanAmendments(entries: readonly unknown[]): ApprovedPla
 	}
 
 	const assistantMessages: Array<{ index: number; text: string }> = [];
-	const pairs: Array<{ approval: string; content: string; assistantIndex: number }> = [];
-	const pairedAssistants = new Set<number>();
+	const askCalls = new Map<string, AskCallContext>();
+	const askDecisions: AuthorizationDecision[] = [];
+	const conversationDecisions: AuthorizationDecision[] = [];
 	for (let index = baselineIndex + 1; index < entries.length; index++) {
 		const entry = entries[index];
 		if (!entry || typeof entry !== "object") continue;
 		const record = entry as Record<string, unknown>;
 		if (record.type !== "message" || !record.message || typeof record.message !== "object") continue;
 		const message = record.message as Record<string, unknown>;
-		const text = plainMessageText(message);
-		if (!text) continue;
+
 		if (message.role === "assistant") {
-			assistantMessages.push({ index, text });
+			if (Array.isArray(message.content)) {
+				for (const item of message.content) {
+					const askCall = parseAskCall(item);
+					if (askCall) askCalls.set(askCall.id, askCall);
+				}
+			}
+			const text = plainMessageText(message);
+			if (text) assistantMessages.push({ index, text });
 			continue;
 		}
-		if (message.role !== "user" || message.synthetic === true || !APPROVAL_REFERENCE_PATTERN.test(text)) continue;
-		const assistant = assistantMessages.at(-1);
-		if (!assistant || pairedAssistants.has(assistant.index)) continue;
-		pairs.push({ approval: text, content: assistant.text, assistantIndex: assistant.index });
-		pairedAssistants.add(assistant.index);
+
+		if (
+			message.role === "toolResult" &&
+			message.toolName === "ask" &&
+			typeof message.toolCallId === "string"
+		) {
+			const askCall = askCalls.get(message.toolCallId);
+			if (!askCall) continue;
+			for (const answer of parseAskAnswers(message, askCall)) {
+				if (answer.timedOut || answer.question.id.startsWith("omp-auto-guard:")) continue;
+				askDecisions.push({
+					kind: "ask",
+					sequence: index,
+					proposal: formatAskQuestion(answer),
+					response: formatAskResponse(answer),
+				});
+			}
+			continue;
+		}
+
+		if (message.role !== "user" || message.synthetic === true) continue;
+		const response = plainMessageText(message);
+		const proposal = assistantMessages.at(-1)?.text;
+		if (proposal && response) {
+			conversationDecisions.push({ kind: "conversation", sequence: index, proposal, response });
+		}
 	}
 
-	const amendments: ApprovedPlanAmendment[] = [];
-	let remainingCharacters = 6000;
-	for (const pair of pairs.reverse()) {
-		if (amendments.length >= 4 || remainingCharacters <= 0) break;
-		const approval = truncateExcerpt(pair.approval, Math.min(1000, remainingCharacters));
-		remainingCharacters -= approval.length;
-		const content = truncateExcerpt(pair.content, Math.min(3000, remainingCharacters));
-		if (!content) break;
-		remainingCharacters -= content.length;
-		amendments.push({ approval, content });
-	}
-	return amendments;
+	const select = (
+		decisions: AuthorizationDecision[],
+		maxDecisions: number,
+		maxBytes: number,
+	): AuthorizationDecision[] => {
+		const selected: AuthorizationDecision[] = [];
+		let remainingBytes = maxBytes;
+		for (let index = decisions.length - 1; index >= 0 && selected.length < maxDecisions; index--) {
+			const decision = decisions[index]!;
+			const bytes = classifierInputBytes(decision);
+			if (bytes > remainingBytes) continue;
+			selected.push(decision);
+			remainingBytes -= bytes;
+		}
+		return selected.reverse();
+	};
+
+	const retained = [
+		...select(askDecisions, 8, MAX_CLASSIFIER_INPUT_BYTES / 2),
+		...select(conversationDecisions, 16, MAX_CLASSIFIER_INPUT_BYTES / 4),
+	];
+	const retainedSet = new Set(retained);
+	const latestOmittedSequence = [...askDecisions, ...conversationDecisions].reduce(
+		(latest, decision) => retainedSet.has(decision) ? latest : Math.max(latest, decision.sequence),
+		-1,
+	);
+	return retained
+		.filter(decision => decision.sequence > latestOmittedSequence)
+		.sort((left, right) => left.sequence - right.sequence);
 }
 
 export function recentConversation(entries: readonly unknown[]): ConversationExcerpt[] {
@@ -616,33 +657,33 @@ export function recentConversation(entries: readonly unknown[]): ConversationExc
 	if (firstAuthoritativeUser && !selectedIndices.has(firstAuthoritativeUser.index)) {
 		addCandidates([firstAuthoritativeUser], 3000, 1);
 	}
-	const approvedPlans: ConversationCandidate[] = [];
-	for (const userMessage of authoritativeUsers.slice(0, 8)) {
-		if (userMessage.pairedAssistantIndex !== undefined) {
-			const pairedQuestion = candidates.find(candidate => candidate.index === userMessage.pairedAssistantIndex);
-			if (pairedQuestion) approvedPlans.push(pairedQuestion);
-			continue;
-		}
-		if (!APPROVAL_REFERENCE_PATTERN.test(userMessage.text)) continue;
-		for (let index = candidates.length - 1; index >= 0; index--) {
-			const candidate = candidates[index];
-			if (candidate.index >= userMessage.index || candidate.role !== "assistant") continue;
-			approvedPlans.push(candidate);
-			break;
-		}
-	}
 	const recentNonAuthoritative = candidates.filter(candidate => !candidate.authoritative).reverse();
-	addCandidates([...approvedPlans, ...recentNonAuthoritative], 6000, 8);
+	addCandidates(recentNonAuthoritative, 6000, 8);
 	return selected
 		.sort((left, right) => left.index - right.index)
 		.map(({ role, authoritative, text }) => ({ role, authoritative, text }));
 }
 
-export function recentTechnicalContext(entries: readonly unknown[]): TechnicalExcerpt[] {
-	const selected: Array<TechnicalExcerpt & { index: number }> = [];
-	let remainingCharacters = 8000;
-	for (let index = entries.length - 1; index >= 0; index--) {
-		if (selected.length >= 16 || remainingCharacters <= 0) break;
+function evidenceRelevanceTokens(value: unknown): string[] {
+	const strings: string[] = [];
+	scalarStrings(value, strings);
+	const tokens = new Set<string>();
+	for (const text of strings) {
+		for (const match of text.matchAll(/[a-z0-9][a-z0-9_.:/\\-]{7,}/gi)) {
+			const normalized = match[0].toLowerCase().replace(/[^a-z0-9]/g, "");
+			if (normalized.length >= 8) tokens.add(normalized);
+		}
+	}
+	return [...tokens].sort((left, right) => right.length - left.length).slice(0, 32);
+}
+
+export function recentTechnicalContext(
+	entries: readonly unknown[],
+	relevantInput?: unknown,
+): TechnicalExcerpt[] {
+	const tokens = evidenceRelevanceTokens(relevantInput);
+	const candidates: Array<TechnicalExcerpt & { index: number; relevant: boolean }> = [];
+	for (let index = entries.length - 1; index >= 0 && candidates.length < 64; index--) {
 		const entry = entries[index];
 		if (!entry || typeof entry !== "object") continue;
 		const record = entry as Record<string, unknown>;
@@ -650,50 +691,39 @@ export function recentTechnicalContext(entries: readonly unknown[]): TechnicalEx
 		const message = record.message as Record<string, unknown>;
 		if (message.role !== "toolResult" || message.toolName === "ask" || typeof message.toolName !== "string") continue;
 		const text = plainMessageText(message);
-		if (!text) continue;
-		const excerpt = truncateExcerpt(String(redactForClassifier(text)), Math.min(500, remainingCharacters));
-		selected.push({
+		if (!text || (message.isError === true && /^OMP Auto Guard (?:requires|blocked|discarded)\b/.test(text))) {
+			continue;
+		}
+		const normalized = text.toLowerCase().replace(/[^a-z0-9]/g, "");
+		candidates.push({
 			index,
 			toolName: message.toolName,
 			isError: message.isError === true,
-			text: excerpt,
+			text,
+			relevant: tokens.some(token => normalized.includes(token)),
 		});
-		remainingCharacters -= excerpt.length;
+	}
+
+	candidates.sort((left, right) => Number(right.relevant) - Number(left.relevant) || right.index - left.index);
+	const selected: Array<TechnicalExcerpt & { index: number }> = [];
+	let remainingCharacters = 8000;
+	for (const candidate of candidates) {
+		if (selected.length >= 16 || remainingCharacters <= 0) break;
+		const limit = Math.min(candidate.relevant ? 2000 : 500, remainingCharacters);
+		const text = truncateExcerpt(String(redactForClassifier(candidate.text)), limit);
+		selected.push({
+			index: candidate.index,
+			toolName: candidate.toolName,
+			isError: candidate.isError,
+			text,
+		});
+		remainingCharacters -= text.length;
 	}
 	return selected
-		.reverse()
+		.sort((left, right) => left.index - right.index)
 		.map(({ toolName, isError, text }) => ({ toolName, isError, text }));
 }
 
-export function recentToolCalls(entries: readonly unknown[]): ToolCallExcerpt[] {
-	const selected: Array<ToolCallExcerpt & { index: number; itemIndex: number }> = [];
-	let remainingCharacters = 4000;
-	for (let index = entries.length - 1; index >= 0; index--) {
-		if (selected.length >= 8 || remainingCharacters <= 0) break;
-		const entry = entries[index];
-		if (!entry || typeof entry !== "object") continue;
-		const record = entry as Record<string, unknown>;
-		if (record.type !== "message" || !record.message || typeof record.message !== "object") continue;
-		const message = record.message as Record<string, unknown>;
-		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
-		for (let itemIndex = message.content.length - 1; itemIndex >= 0; itemIndex--) {
-			if (selected.length >= 8 || remainingCharacters <= 0) break;
-			const item = message.content[itemIndex];
-			if (!item || typeof item !== "object") continue;
-			const call = item as Record<string, unknown>;
-			if (call.type !== "toolCall" || typeof call.name !== "string" || call.name === "ask") continue;
-			const argumentsText = truncateExcerpt(
-				JSON.stringify(redactForClassifier(call.arguments ?? {})),
-				Math.min(500, remainingCharacters),
-			);
-			selected.push({ index, itemIndex, toolName: call.name, arguments: argumentsText });
-			remainingCharacters -= argumentsText.length;
-		}
-	}
-	return selected
-		.reverse()
-		.map(({ toolName, arguments: argumentsText }) => ({ toolName, arguments: argumentsText }));
-}
 
 function taggedSection(text: string, tag: string): string | undefined {
 	const startMarker = `<${tag}>`;
