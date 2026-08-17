@@ -465,15 +465,37 @@ describe("classifier conversation context", () => {
 				lineCount: 173,
 			},
 		};
+		const expectedSkill = {
+			kind: "skill" as const,
+			sequence: 0,
+			response: `Manual user skill invocation: openspec-apply-change\n\n${content}`,
+		};
 
 		expect(recentConversation([manualSkill])).toEqual([]);
-		expect(authorizationDecisions([manualSkill])).toEqual([
-			{
-				kind: "skill",
-				sequence: 0,
-				response: `Manual user skill invocation: openspec-apply-change\n\n${content}`,
-			},
-		]);
+		expect(authorizationDecisions([manualSkill])).toEqual([expectedSkill]);
+		expect(
+			authorizationDecisions([
+				manualSkill,
+				{
+					type: "custom_message",
+					id: "plan-reference",
+					customType: "plan-mode-reference",
+					attribution: "agent",
+					content: [
+						"## Existing Plan",
+						"",
+						"The approved plan file is at `local://safe-plan.md`.",
+						"",
+						"<instruction>",
+						"If this plan is relevant to current work and not complete, you MUST continue executing it.",
+						"If you do not have the current plan content in visible context, you MUST read `local://safe-plan.md`.",
+						"If the plan is stale or unrelated, you MUST ignore it.",
+						"NEVER stop because inline plan content is compressed, expired, or unrecoverable. Read the file.",
+						"</instruction>",
+					].join("\n"),
+				},
+			]),
+		).toEqual([expectedSkill]);
 
 		for (const lookalike of [
 			{ ...manualSkill, attribution: "agent" },

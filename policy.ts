@@ -493,6 +493,16 @@ export function authorizationDecisions(entries: readonly unknown[]): Authorizati
 	const askCalls = new Map<string, AskCallContext>();
 	const askDecisions: AuthorizationDecision[] = [];
 	const userDecisions: AuthorizationDecision[] = [];
+	if (baselineIndex >= 0) {
+		for (let index = baselineIndex; index >= 0; index--) {
+			const entry = entries[index];
+			if (!entry || typeof entry !== "object") continue;
+			const manualSkill = manualSkillInvocationText(entry as Record<string, unknown>);
+			if (!manualSkill) continue;
+			userDecisions.push({ kind: "skill", sequence: index, response: manualSkill });
+			break;
+		}
+	}
 	for (let index = baselineIndex + 1; index < entries.length; index++) {
 		const entry = entries[index];
 		if (!entry || typeof entry !== "object") continue;
