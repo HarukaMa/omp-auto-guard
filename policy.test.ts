@@ -5,6 +5,7 @@ import {
 	approvedPlanReference,
 	authorizationDecisions,
 	classifierInputBytes,
+	classifierContext,
 	classifierModelCandidates,
 	classifierTier,
 	inspectSql,
@@ -14,6 +15,7 @@ import {
 	recentConversation,
 	recentTechnicalContext,
 	redactForClassifier,
+	redactClassifierPayload,
 	selectClassifierInstructions,
 	unwrapBuiltinXdevCall,
 	unwrapXdevCall,
@@ -167,6 +169,12 @@ describe("tool policy", () => {
 
 	test("blocks catastrophic shell commands and classifies ordinary execution", () => {
 		expect(inspectToolCall("bash", { command: "rm -rf /" }).decision).toBe("deny");
+		expect(inspectToolCall("bash", { command: "halt" }).decision).toBe("deny");
+		expect(
+			inspectToolCall("bash", {
+				command: `ssh node-a "erl -noshell -eval 'io:format(\\"ok\\"), halt().'"`,
+			}).decision,
+		).toBe("classify");
 		expect(inspectToolCall("bash", { command: "cargo test" }).decision).toBe("classify");
 	});
 
@@ -888,6 +896,142 @@ describe("classifier conversation context", () => {
 		expect(selected.some(item => item.text.includes("requires native user approval"))).toBe(false);
 	});
 
+	test("pairs successful test database results with allowlisted call evidence", () => {
+		const call = (toolCallId: string, command: string) => ({
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: toolCallId, name: "bash", arguments: { command } }],
+			},
+		});
+		const result = (toolCallId: string, text: string) => ({
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolName: "bash",
+				toolCallId,
+				content: [{ type: "text", text }],
+			},
+		});
+		const selected = recentTechnicalContext(
+			[
+				call(
+					"preflight",
+					"CRYPTOBOX_TEST_DATABASE_URL=postgres://alice:hunter2@localhost/cryptobox_test_agent",
+				),
+				result("preflight", "cryptobox_test_agent"),
+				call("tests", "cargo test --workspace --all-features --locked"),
+				result("tests", "test result: ok. 42 passed"),
+				...Array.from({ length: 20 }, (_, index) => result(`noise-${index}`, `noise ${index}`)),
+			],
+			{
+				command:
+					"$env:CRYPTOBOX_TEST_DATABASE_URL=[Environment]::GetEnvironmentVariable('CRYPTOBOX_TEST_DATABASE_URL','User'); cargo test --workspace --all-features --locked",
+			},
+		);
+
+		expect(selected.find(item => item.text === "cryptobox_test_agent")?.inputEvidence).toContain(
+			"test database variable: CRYPTOBOX_TEST_DATABASE_URL",
+		);
+		expect(selected.find(item => item.text.includes("42 passed"))?.inputEvidence).toBe(
+			"command kind: cargo-test",
+		);
+		expect(JSON.stringify(selected)).not.toContain("hunter2");
+	});
+
+	test("preserves causal context while shaving and redacting bulky evidence", () => {
+		const output = `password=hunter2\n${"x".repeat(5000)}\nfinal status`;
+		const processInput = "abandon ability able about above absent absorb abstract absurd abuse access accident";
+		const payload = redactClassifierPayload({
+			classifierContext: classifierContext([
+				{
+					role: "user",
+					content: [{ type: "text", text: "Run the local wallet test." }],
+				},
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "private reasoning" },
+						{
+							type: "toolCall",
+							id: "wallet-input",
+							name: "hub",
+							arguments: { op: "send", name: "wallet", text: processInput },
+						},
+					],
+				},
+				{
+					role: "toolResult",
+					toolCallId: "wallet-input",
+					toolName: "hub",
+					isError: false,
+					content: [
+						{ type: "text", text: output },
+						{ type: "image", data: "base64", mimeType: "image/png" },
+					],
+					details: { password: "hidden-detail" },
+				},
+				{
+					role: "compactionSummary",
+					summary: "The wallet flow is an established local E2E test.",
+					blocks: [
+						{ type: "text", text: "Archived wallet test context." },
+						{ type: "image", data: "base64", mimeType: "image/png" },
+					],
+					providerPayload: { items: [{ password: "opaque-secret" }] },
+				},
+			]),
+			authorizationDecisions: [
+				{ kind: "user", sequence: 1, response: "Continue with password=hunter2" },
+			],
+		});
+		const context = payload.classifierContext as Record<string, unknown>[];
+
+		expect(context[0]).toEqual({
+			role: "user",
+			authority: "user",
+			text: "Run the local wallet test.",
+		});
+		expect(context[1]).toMatchObject({
+			role: "assistant",
+			authority: "none",
+			toolCalls: [
+				{
+					id: "wallet-input",
+					name: "hub",
+					arguments: {
+						op: "send",
+						name: "wallet",
+						text: { placeholder: "[PROCESS_INPUT_1]", characters: processInput.length, lines: 1 },
+					},
+				},
+			],
+		});
+		expect(context[2]).toMatchObject({
+			role: "toolResult",
+			authority: "untrusted",
+			outputCharacters: output.length,
+			omittedImages: 1,
+		});
+		expect(String(context[2]?.text)).toContain("...[TRUNCATED]...");
+		expect(String(context[2]?.text)).toContain("final status");
+		expect(context[3]).toEqual({
+			role: "compactionSummary",
+			authority: "none",
+			summary: "The wallet flow is an established local E2E test.",
+			preservedText: "Archived wallet test context.",
+			omittedImages: 1,
+		});
+		expect(payload.authorizationDecisions).toEqual([
+			{ kind: "user", sequence: 1, response: "Continue with password=[REDACTED]" },
+		]);
+		expect(JSON.stringify(payload)).not.toContain("hunter2");
+		expect(JSON.stringify(payload)).not.toContain(processInput);
+		expect(JSON.stringify(payload)).not.toContain("private reasoning");
+		expect(JSON.stringify(payload)).not.toContain("hidden-detail");
+		expect(JSON.stringify(payload)).not.toContain("opaque-secret");
+	});
+
 	test("adds the first user without displacing the existing recent-user budget", () => {
 		const entry = (text: string) => ({
 			type: "message",
@@ -1033,6 +1177,7 @@ describe("classifier boundary", () => {
 				authorization: "Bearer token",
 				command: "curl -H 'Authorization: Bearer live-token' https://example.test",
 				query: "x".repeat(5000),
+				databaseUrl: "postgres://alice:hunter2@localhost/cryptobox_test_agent",
 			},
 		}) as Record<string, unknown>;
 		const nested = redacted.nested as Record<string, unknown>;
@@ -1041,6 +1186,9 @@ describe("classifier boundary", () => {
 		expect(Object.keys(redacted.manyFields as Record<string, unknown>)).toHaveLength(70);
 		expect(nested.authorization).toBe("[REDACTED]");
 		expect(String(nested.command)).not.toContain("live-token");
+		expect(String(nested.databaseUrl)).toBe(
+			"postgres://alice:[REDACTED]@localhost/cryptobox_test_agent",
+		);
 		expect(String(nested.query)).toHaveLength(5000);
 	});
 

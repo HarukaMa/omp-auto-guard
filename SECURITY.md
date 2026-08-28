@@ -44,8 +44,9 @@ Supervised-process authorization is recorded only after a permitted `hub start` 
 
 ## Sensitive data
 
-Classifier requests may contain working-directory paths, recent conversation, up to 8,000 characters of best-effort-redacted recent non-Ask tool results, project/global instructions, and best-effort-redacted tool arguments. The classifier may use a different provider from the main agent. Redaction is not guaranteed to remove every secret.
-Approved Plan Mode snapshots and approved inline amendments may also be sent to the classifier provider.
+Classifier requests may contain the complete effective main-agent system prompt, the complete effective post-compaction session message sequence, working-directory paths, approved Plan Mode snapshots, approved inline amendments, configured target aliases, supervised-process launch arguments, and the complete proposed tool call. Assistant reasoning, images, provider metadata, usage, and verbose tool-result details are omitted. Each tool-result body retains its first and last 2,048 characters plus its original character count. Historical text sent to a supervised process is replaced by a stable per-request placeholder with its character and line counts.
+
+Every top-level classifier payload field is best-effort redacted independently so structural authorization fields remain intact while their contents are redacted. The classifier may use a different provider from the main agent. Redaction is not guaranteed to remove every secret.
 
 Audit logs may contain sensitive tool details and raw classifier output. Context logging is especially sensitive. Store logs with restricted permissions, limit retention, and never commit them.
 Native approval prompts contain an agent-supplied, non-authoritative rationale capped at 400 characters. Ordinary calls show a redacted argument summary capped at 512 characters; database calls show the complete redacted classifier input when it fits the 128 KiB classifier limit so multiline SQL remains inspectable. Auto Guard accepts only a non-empty, single-line rationale in the designated approval-option preview, then re-renders and exactly compares every Ask field before display. Reject an approval when the visible information is insufficient.

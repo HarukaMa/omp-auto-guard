@@ -29,6 +29,7 @@ export interface TechnicalExcerpt {
 	toolName: string;
 	isError: boolean;
 	text: string;
+	inputEvidence?: string;
 }
 
 export interface AuthorizationDecision {
@@ -168,7 +169,7 @@ const DATABASE_CLIENT = /\b(?:psql|mysql|mariadb|sqlite3|redis-cli|mongosh|click
 const CATASTROPHIC_SHELL_PATTERNS: readonly [RegExp, string][] = [
 	[/\brm\s+(?:-[^\s]*r[^\s]*f|-[^\s]*f[^\s]*r|--recursive\s+--force|--force\s+--recursive)\s+(?:--no-preserve-root\s+)?\/(?:\s|$)/i, "recursive deletion of the filesystem root"],
 	[/\bmkfs(?:\.[a-z0-9]+)?\s+\/dev\//i, "formatting a block device"],
-	[/\b(?:shutdown|poweroff|reboot|halt)\b/i, "host shutdown or restart"],
+	[/\b(?:shutdown|poweroff|reboot|halt)\b(?!\s*\()/i, "host shutdown or restart"],
 	[/\bdd\b[^\n]*\bof=\/dev\/(?:sd|nvme|vd|xvd|mmcblk)/i, "raw write to a block device"],
 	[/\b(?:curl|wget)\b[^\n|;&]*(?:\||&&|;)\s*(?:sudo\s+)?(?:bash|sh|zsh|pwsh|powershell)\b/i, "remote content executed directly by a shell"],
 ];
@@ -657,13 +658,57 @@ function evidenceRelevanceTokens(value: unknown): string[] {
 	}
 	return [...tokens].sort((left, right) => right.length - left.length).slice(0, 32);
 }
+function boundedTechnicalInputEvidence(input: unknown): string | undefined {
+	const strings: string[] = [];
+	scalarStrings(input, strings);
+	const text = strings.join("\n");
+	const facts = new Set<string>();
+	if (/\bcargo(?:\.exe)?\s+test\b/i.test(text)) facts.add("command kind: cargo-test");
+	if (/\bpsql(?:\.exe)?\b/i.test(text)) facts.add("command kind: psql-command");
+	for (const match of text.matchAll(/\b[A-Z][A-Z0-9_]{0,63}_TEST_DATABASE_URL\b/g)) {
+		facts.add(`test database variable: ${match[0]}`);
+	}
+	for (const match of text.matchAll(/\b[a-z0-9][a-z0-9_]{0,63}_test_[a-z0-9_]{1,64}\b/gi)) {
+		facts.add(`test database identifier: ${match[0]}`);
+	}
+	return [...facts].slice(0, 8).join("\n") || undefined;
+}
+
 
 export function recentTechnicalContext(
 	entries: readonly unknown[],
 	relevantInput?: unknown,
 ): TechnicalExcerpt[] {
-	const tokens = evidenceRelevanceTokens(relevantInput);
-	const candidates: Array<TechnicalExcerpt & { index: number; relevant: boolean }> = [];
+	const relevantEvidence = boundedTechnicalInputEvidence(relevantInput);
+	const tokens = evidenceRelevanceTokens([relevantInput, relevantEvidence]);
+	const inputEvidenceByToolCallId = new Map<string, string>();
+	for (const entry of entries) {
+		if (!entry || typeof entry !== "object") continue;
+		const record = entry as Record<string, unknown>;
+		if (record.type !== "message" || !record.message || typeof record.message !== "object") continue;
+		const message = record.message as Record<string, unknown>;
+		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+		for (const item of message.content) {
+			if (!item || typeof item !== "object") continue;
+			const call = item as Record<string, unknown>;
+			if (
+				call.type !== "toolCall" ||
+				typeof call.id !== "string" ||
+				typeof call.name !== "string" ||
+				!call.arguments ||
+				typeof call.arguments !== "object" ||
+				Array.isArray(call.arguments)
+			) {
+				continue;
+			}
+			const evidence = boundedTechnicalInputEvidence(call.arguments);
+			if (evidence) inputEvidenceByToolCallId.set(call.id, evidence);
+		}
+	}
+
+	const candidates: Array<
+		TechnicalExcerpt & { index: number; relevant: boolean; inputEvidence?: string }
+	> = [];
 	for (let index = entries.length - 1; index >= 0 && candidates.length < 64; index--) {
 		const entry = entries[index];
 		if (!entry || typeof entry !== "object") continue;
@@ -675,12 +720,17 @@ export function recentTechnicalContext(
 		if (!text || (message.isError === true && /^OMP Auto Guard (?:requires|blocked|discarded)\b/.test(text))) {
 			continue;
 		}
-		const normalized = text.toLowerCase().replace(/[^a-z0-9]/g, "");
+		const inputEvidence =
+			message.isError !== true && typeof message.toolCallId === "string"
+				? inputEvidenceByToolCallId.get(message.toolCallId)
+				: undefined;
+		const normalized = `${text}\n${inputEvidence ?? ""}`.toLowerCase().replace(/[^a-z0-9]/g, "");
 		candidates.push({
 			index,
 			toolName: message.toolName,
 			isError: message.isError === true,
 			text,
+			inputEvidence,
 			relevant: tokens.some(token => normalized.includes(token)),
 		});
 	}
@@ -690,19 +740,230 @@ export function recentTechnicalContext(
 	let remainingCharacters = 8000;
 	for (const candidate of candidates) {
 		if (selected.length >= 16 || remainingCharacters <= 0) break;
-		const limit = Math.min(candidate.relevant ? 2000 : 500, remainingCharacters);
+		const evidenceLength = candidate.inputEvidence?.length ?? 0;
+		const limit = Math.min(candidate.relevant ? 2000 : 500, remainingCharacters - evidenceLength);
+		if (limit <= 0) continue;
 		const text = truncateExcerpt(String(redactForClassifier(candidate.text)), limit);
 		selected.push({
 			index: candidate.index,
 			toolName: candidate.toolName,
 			isError: candidate.isError,
 			text,
+			...(candidate.inputEvidence ? { inputEvidence: candidate.inputEvidence } : {}),
 		});
-		remainingCharacters -= text.length;
+		remainingCharacters -= text.length + evidenceLength;
 	}
 	return selected
 		.sort((left, right) => left.index - right.index)
-		.map(({ toolName, isError, text }) => ({ toolName, isError, text }));
+		.map(({ toolName, isError, text, inputEvidence }) => ({
+			toolName,
+			isError,
+			text,
+			...(inputEvidence ? { inputEvidence } : {}),
+		}));
+}
+
+export type ClassifierContextAuthority = "user" | "none" | "untrusted";
+
+export interface ClassifierContextMessage {
+	role: string;
+	authority: ClassifierContextAuthority;
+	[key: string]: unknown;
+}
+
+const CLASSIFIER_TOOL_RESULT_CHARACTERS = 4096;
+
+function contextText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter(item => item && typeof item === "object" && (item as Record<string, unknown>).type === "text")
+		.map(item => String((item as Record<string, unknown>).text ?? ""))
+		.join("\n");
+}
+
+function contextImageCount(content: unknown): number {
+	if (!Array.isArray(content)) return 0;
+	return content.filter(
+		item => item && typeof item === "object" && (item as Record<string, unknown>).type === "image",
+	).length;
+}
+
+function replaceProcessInput(
+	toolName: string,
+	args: unknown,
+	processInputs: Map<string, string>,
+): unknown {
+	if (toolName !== "hub" || !args || typeof args !== "object" || Array.isArray(args)) return args;
+	const record = args as Record<string, unknown>;
+	if (record.op !== "send" || typeof record.name !== "string" || typeof record.text !== "string") return args;
+	let placeholder = processInputs.get(record.text);
+	if (!placeholder) {
+		placeholder = `[PROCESS_INPUT_${processInputs.size + 1}]`;
+		processInputs.set(record.text, placeholder);
+	}
+	return {
+		...record,
+		text: {
+			placeholder,
+			characters: record.text.length,
+			lines: record.text.split(/\r?\n/).length,
+		},
+	};
+}
+
+
+function contextToolCalls(
+	content: unknown,
+	processInputs: Map<string, string>,
+): Record<string, unknown>[] {
+	if (!Array.isArray(content)) return [];
+	const calls: Record<string, unknown>[] = [];
+	for (const item of content) {
+		if (!item || typeof item !== "object") continue;
+		const call = item as Record<string, unknown>;
+		if (call.type !== "toolCall" || typeof call.name !== "string") continue;
+		const args = replaceProcessInput(call.name, call.arguments, processInputs);
+		calls.push({
+			...(typeof call.id === "string" ? { id: call.id } : {}),
+			name: call.name,
+			arguments: args,
+			...(typeof call.intent === "string" ? { intent: call.intent } : {}),
+		});
+	}
+	return calls;
+}
+
+export function classifierContext(
+	messages: readonly unknown[],
+	processInputs = new Map<string, string>(),
+): ClassifierContextMessage[] {
+	const context: ClassifierContextMessage[] = [];
+	for (const message of messages) {
+		if (!message || typeof message !== "object") continue;
+		const record = message as Record<string, unknown>;
+		const role = typeof record.role === "string" ? record.role : "";
+
+		if (role === "user" || role === "developer") {
+			const text = contextText(record.content);
+			const imageCount = contextImageCount(record.content);
+			if (!text && imageCount === 0) continue;
+			context.push({
+				role,
+				authority: role === "user" && record.synthetic !== true ? "user" : "none",
+				...(record.synthetic === true ? { synthetic: true } : {}),
+				...(text ? { text } : {}),
+				...(imageCount > 0 ? { omittedImages: imageCount } : {}),
+			});
+			continue;
+		}
+
+		if (role === "assistant") {
+			const text = contextText(record.content);
+			const toolCalls = contextToolCalls(record.content, processInputs);
+			if (!text && toolCalls.length === 0) continue;
+			context.push({
+				role,
+				authority: "none",
+				...(text ? { text } : {}),
+				...(toolCalls.length > 0 ? { toolCalls } : {}),
+			});
+			continue;
+		}
+
+		if (role === "toolResult") {
+			const text = contextText(record.content);
+			const imageCount = contextImageCount(record.content);
+			context.push({
+				role,
+				authority: "untrusted",
+				...(typeof record.toolCallId === "string" ? { toolCallId: record.toolCallId } : {}),
+				...(typeof record.toolName === "string" ? { toolName: record.toolName } : {}),
+				isError: record.isError === true,
+				...(text
+					? {
+							text: truncateExcerpt(text, CLASSIFIER_TOOL_RESULT_CHARACTERS),
+							outputCharacters: text.length,
+						}
+					: {}),
+				...(imageCount > 0 ? { omittedImages: imageCount } : {}),
+			});
+			continue;
+		}
+
+		if (role === "compactionSummary" || role === "branchSummary") {
+			if (typeof record.summary !== "string" || !record.summary) continue;
+			const preservedText = role === "compactionSummary" ? contextText(record.blocks) : "";
+			const omittedImages =
+				role === "compactionSummary"
+					? contextImageCount(Array.isArray(record.blocks) ? record.blocks : record.images)
+					: 0;
+			context.push({
+				role,
+				authority: "none",
+				summary: record.summary,
+				...(preservedText ? { preservedText } : {}),
+				...(omittedImages > 0 ? { omittedImages } : {}),
+			});
+			continue;
+		}
+
+		if (role === "bashExecution" || role === "pythonExecution") {
+			const output = typeof record.output === "string" ? record.output : "";
+			context.push({
+				role,
+				authority: "untrusted",
+				...(typeof record.command === "string" ? { command: record.command } : {}),
+				...(typeof record.code === "string" ? { code: record.code } : {}),
+				...(output
+					? {
+							output: truncateExcerpt(output, CLASSIFIER_TOOL_RESULT_CHARACTERS),
+							outputCharacters: output.length,
+						}
+					: {}),
+				...(typeof record.exitCode === "number" ? { exitCode: record.exitCode } : {}),
+				...(record.cancelled === true ? { cancelled: true } : {}),
+			});
+			continue;
+		}
+
+		if (role === "fileMention" && Array.isArray(record.files)) {
+			context.push({
+				role,
+				authority: "untrusted",
+				files: record.files.map(file => {
+					if (!file || typeof file !== "object") return {};
+					const value = file as Record<string, unknown>;
+					const content = typeof value.content === "string" ? value.content : "";
+					return {
+						...(typeof value.path === "string" ? { path: value.path } : {}),
+						...(content
+							? {
+									content: truncateExcerpt(content, CLASSIFIER_TOOL_RESULT_CHARACTERS),
+									contentCharacters: content.length,
+								}
+							: {}),
+						...(typeof value.lineCount === "number" ? { lineCount: value.lineCount } : {}),
+						...(typeof value.byteSize === "number" ? { byteSize: value.byteSize } : {}),
+					};
+				}),
+			});
+			continue;
+		}
+
+		const text =
+			typeof record.summary === "string"
+				? record.summary
+				: contextText(record.content);
+		if (!text) continue;
+		context.push({
+			role: role || "context",
+			authority: "none",
+			...(typeof record.customType === "string" ? { customType: record.customType } : {}),
+			text: truncateExcerpt(text, CLASSIFIER_TOOL_RESULT_CHARACTERS),
+		});
+	}
+	return context;
 }
 
 
@@ -852,7 +1113,7 @@ export function redactForClassifier(value: unknown): unknown {
 				/(\b(?:authorization|password|passwd|token|api[_-]?key|secret)\b\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
 				"$1[REDACTED]",
 			)
-			.replace(/(https?:\/\/[^:\s/@]+:)[^@\s/]+@/gi, "$1[REDACTED]@");
+			.replace(/(\b[a-z][a-z0-9+.-]{0,31}:\/\/[^:\s/@]+:)[^@\s/]+@/gi, "$1[REDACTED]@");
 	}
 	if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
 	if (Array.isArray(value)) return value.map(redactForClassifier);
@@ -864,6 +1125,14 @@ export function redactForClassifier(value: unknown): unknown {
 		return result;
 	}
 	return String(value);
+}
+
+export function redactClassifierPayload(payload: Record<string, unknown>): Record<string, unknown> {
+	const redacted = Object.create(null) as Record<string, unknown>;
+	for (const [key, value] of Object.entries(payload)) {
+		if (value !== undefined) redacted[key] = redactForClassifier(value);
+	}
+	return redacted;
 }
 
 export function classifierInputBytes(value: unknown): number {

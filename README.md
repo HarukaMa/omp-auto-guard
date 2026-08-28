@@ -94,14 +94,14 @@ If configured classifier candidates cannot be resolved, Auto Guard falls back to
 Model classification can transmit the following to the resolved classifier provider:
 
 - Working-directory path
-- A bounded selection of recent user and assistant conversation as explicitly non-authoritative context
+- Complete effective main-agent system prompt, tagged as policy context without operation authorization
+- Complete effective post-compaction session message sequence with explicit user, assistant, and untrusted-tool provenance
+- Assistant reasoning, images, provider metadata, usage, and verbose tool-result details are omitted. Each tool-result body retains its first and last 2,048 characters plus its original character count. Historical text sent to a supervised process is replaced by a stable per-request placeholder with its character and line counts
 - Bounded exact host-generated, user-attributed manual skill invocations in the sequenced authorization stream
-- Up to 16 recent non-Ask tool results within an 8,000-character budget; evidence relevant to the proposed call may use up to 2,000 characters and other results up to 500
 - Immutable approved Plan Mode content, when active
 - Up to eight complete native Ask decisions within 64 KiB and up to sixteen paired replies, standalone user statements, or manual skill decisions within 32 KiB, merged as a complete chronological branch suffix
 - Unambiguous configured SSH alias, host, username, and port mappings
-- Project and global instructions extracted from the OMP system prompt
-- The isolated proposed tool name and best-effort-redacted arguments
+- The complete proposed tool name and best-effort-redacted arguments
 - Static policy observation
 
 Redaction is not a reliable data-loss-prevention mechanism. Commands, paths, SQL, conversation text, and model responses may contain sensitive data. Configure classifier providers and credentials accordingly.
