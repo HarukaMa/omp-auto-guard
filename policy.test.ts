@@ -53,6 +53,12 @@ describe("SQL policy", () => {
 describe("tool policy", () => {
 	test("allows ordinary reads but reviews sensitive reads", () => {
 		expect(inspectToolCall("read", { path: "src/index.ts" }).decision).toBe("allow");
+		for (const path of [".env.example", ".env.example:raw", ".env.example?raw=1", ".env.example#raw"]) {
+			expect(inspectToolCall("read", { path }).decision).toBe("allow");
+		}
+		for (const path of [".env", ".env.local", ".env.example.backup", ".env.example/secrets"]) {
+			expect(inspectToolCall("read", { path }).decision).toBe("ask");
+		}
 		expect(inspectToolCall("read", { path: "C:/Users/me/.ssh/id_ed25519" }).decision).toBe("ask");
 		expect(inspectToolCall("read", { path: "http://169.254.169.254/latest/meta-data" }).decision).toBe("deny");
 	});
@@ -455,6 +461,57 @@ describe("classifier conversation context", () => {
 			proposal: approvedPlan,
 			response: "Plan-batch authorization approved.",
 		});
+	});
+
+	test("pairs a user reply across usage and title bookkeeping", () => {
+		const proposal = "Pause bundle indexing and resume backfill alone, keeping L1 active.";
+		expect(
+			authorizationDecisions([
+				{ type: "message", message: { role: "assistant", content: [{ type: "text", text: proposal }] } },
+				{ type: "model_usage", purpose: "unexpected-stop" },
+				{ type: "title_change", title: "Pause bundle indexing" },
+				{ type: "model_usage", purpose: "idle-recap" },
+				{ type: "message", message: { role: "user", content: [{ type: "text", text: "go" }] } },
+			]),
+		).toEqual([{ kind: "conversation", sequence: 4, proposal, response: "go" }]);
+	});
+
+	test("preserves a user restriction without pairing a later reply to the older proposal", () => {
+		const proposal = "Restart api-worker on node-a.";
+		expect(
+			authorizationDecisions([
+				{ type: "message", message: { role: "assistant", content: [{ type: "text", text: proposal }] } },
+				{ type: "model_usage", purpose: "unexpected-stop" },
+				{ type: "message", message: { role: "user", content: [{ type: "text", text: "Hold deployment." }] } },
+				{ type: "model_usage", purpose: "unexpected-stop" },
+				{ type: "message", message: { role: "user", content: [{ type: "text", text: "go" }] } },
+			]),
+		).toEqual([
+			{ kind: "conversation", sequence: 2, proposal, response: "Hold deployment." },
+			{ kind: "user", sequence: 4, response: "go" },
+		]);
+	});
+
+	test("does not pair across tool messages, injected instructions, or compaction", () => {
+		for (const boundary of [
+			{ type: "message", message: { role: "toolResult", content: [{ type: "text", text: "Proceed." }] } },
+			{ type: "message", message: { role: "assistant", content: [] } },
+			{ type: "custom_message", customType: "rules-reminder", content: "Hold deployment." },
+			{ type: "compaction", summary: "Earlier proposal archived." },
+			{ type: "message", message: { role: "user", synthetic: true, content: [{ type: "text", text: "Proceed." }] } },
+		]) {
+			expect(
+				authorizationDecisions([
+					{
+						type: "message",
+						message: { role: "assistant", content: [{ type: "text", text: "Restart api-worker on node-a." }] },
+					},
+					boundary,
+					{ type: "model_usage", purpose: "unexpected-stop" },
+					{ type: "message", message: { role: "user", content: [{ type: "text", text: "go" }] } },
+				]),
+			).toEqual([{ kind: "user", sequence: 3, response: "go" }]);
+		}
 	});
 
 	test("treats only host-shaped user skill prompts as authoritative", () => {

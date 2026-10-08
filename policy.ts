@@ -161,7 +161,7 @@ const READ_ONLY_DEBUG_ACTIONS = new Set([
 	"variables",
 ]);
 
-const SENSITIVE_PATH = /(?:^|[\\/])(?:\.env(?:\.|$)|\.ssh(?:[\\/]|$)|\.aws(?:[\\/]|$)|\.kube(?:[\\/]|$)|credentials(?:\.|$)|id_(?:rsa|ecdsa|ed25519)(?:\.|$)|\.npmrc$|\.pypirc$)/i;
+const SENSITIVE_PATH = /(?:^|[\\/])(?:\.env(?!\.example(?:$|[:?#]))(?:\.|$)|\.ssh(?:[\\/]|$)|\.aws(?:[\\/]|$)|\.kube(?:[\\/]|$)|credentials(?:\.|$)|id_(?:rsa|ecdsa|ed25519)(?:\.|$)|\.npmrc$|\.pypirc$)/i;
 const METADATA_URL = /https?:\/\/(?:169\.254\.169\.254|metadata\.google\.internal)(?:[\/:]|$)/i;
 const DATABASE_TOOL = /(?:database|postgres|psql|mysql|mariadb|sqlite|redis|mongo|clickhouse|snowflake|bigquery|sql)/i;
 const DATABASE_CLIENT = /\b(?:psql|mysql|mariadb|sqlite3|redis-cli|mongosh|clickhouse-client|bq)\b/i;
@@ -490,7 +490,7 @@ export function authorizationDecisions(entries: readonly unknown[]): Authorizati
 		}
 	}
 
-	const assistantMessages: Array<{ index: number; text: string }> = [];
+	let pendingProposal: string | undefined;
 	const askCalls = new Map<string, AskCallContext>();
 	const askDecisions: AuthorizationDecision[] = [];
 	const userDecisions: AuthorizationDecision[] = [];
@@ -506,8 +506,14 @@ export function authorizationDecisions(entries: readonly unknown[]): Authorizati
 	}
 	for (let index = baselineIndex + 1; index < entries.length; index++) {
 		const entry = entries[index];
-		if (!entry || typeof entry !== "object") continue;
+		if (!entry || typeof entry !== "object") {
+			pendingProposal = undefined;
+			continue;
+		}
 		const record = entry as Record<string, unknown>;
+		if (record.type === "model_usage" || record.type === "title_change") continue;
+		const proposal = pendingProposal;
+		pendingProposal = undefined;
 		const manualSkill = manualSkillInvocationText(record);
 		if (manualSkill) {
 			userDecisions.push({ kind: "skill", sequence: index, response: manualSkill });
@@ -524,7 +530,7 @@ export function authorizationDecisions(entries: readonly unknown[]): Authorizati
 				}
 			}
 			const text = plainMessageText(message);
-			if (text) assistantMessages.push({ index, text });
+			if (text) pendingProposal = text;
 			continue;
 		}
 
@@ -550,10 +556,9 @@ export function authorizationDecisions(entries: readonly unknown[]): Authorizati
 		if (message.role !== "user" || message.synthetic === true) continue;
 		const response = plainMessageText(message);
 		if (!response) continue;
-		const proposal = assistantMessages.at(-1);
 		userDecisions.push(
-			proposal?.index === index - 1
-				? { kind: "conversation", sequence: index, proposal: proposal.text, response }
+			proposal
+				? { kind: "conversation", sequence: index, proposal, response }
 				: { kind: "user", sequence: index, response },
 		);
 	}

@@ -83,6 +83,14 @@ Authorization and material scope:
 
 Effect analysis:
 - Inspect only proposedToolCall, including its complete command and arguments, for side effects. Unknown requires a concrete argument, subcommand, script, plugin, shell composition, or dispatch mechanism that plausibly writes state, changes services, accesses credentials, or initiates material outbound activity. Name that mechanism and its unresolved material consequence.
+- For outbound actions, identify the source data, transmitted payload, recipient, and access granted by uploads, shared links, tunnels, or browser submissions. Private data remains private after encoding, summarization, transformation, or packaging. Public-information requests and ordinary service authentication do not by themselves establish sensitive disclosure.
+- Authorization to disclose private data must cover both the data or source and the recipient. Permission to read, create, or process data alone does not authorize disclosure. Repository privacy and connector availability alone do not establish destination ownership or approval.
+- Credential-bearing reads do not by themselves establish credential theft. Extracting secrets or sessions from unrelated browser profiles, logs, or other unintended sources to gain unapproved access is prohibited. Ordinary authentication must stay within the requested privilege scope.
+- For destructive operations, establish the affected targets and recovery options from the arguments and supplied evidence. Account for executable variable expansion and path resolution, especially changes to common location variables such as HOME. Never assume version control or a backup exists. Unresolved targeting with a concrete path to material damage is unknown.
+- Eval is free-form Python or JavaScript and always receives model review. Separate its direct effects from genuine host tool dispatch.
+- In both languages, tool.<name> dispatches to a host tool that Auto Guard reviews independently. This includes Python tool.write(path=..., content=...) and asyncio.gather(...), and JavaScript tool.write({...}) and Promise.all(...). A host tool named call is guarded at its own event too.
+- If eval only prepares arguments, dispatches guarded host tools, awaits them, and collects results, classify eval as bounded. Even a public GitHub mutation, database write, or deployment dispatched through tool.write is reviewed at the child event. Those child effects do not make the orchestration itself material.
+- Inspect argument evaluation, direct filesystem/process/network access, and custom functions for eval's own effects. Calls through replaced or custom tool objects have no guaranteed interception and must be reviewed as executable code. An eval approval grants no child permits.
 - For database tools, inspect the complete SQL or command as one dialect-specific input. Report unknown when dialect, quoting, dynamic execution, functions, or procedural code prevents establishing its concrete effects; never assume a statement is read-only from its leading keyword alone.
 - Treat destructive database keywords in raw arguments as suspicion, not proof: determine whether each occurrence is executable, quoted, or commented.
 - A direct CLI invocation requesting only help, usage, or version output is bounded, including subcommand help. Classify shell composition and any additional operation by their concrete effects. Executable unfamiliarity and hypothetical network or file behavior cannot raise the invocation to unknown.
@@ -695,7 +703,8 @@ function hubStartProcessName(event: ToolCallEvent): string | undefined {
 		: undefined;
 }
 
-function operationalHubInput(input: Record<string, unknown>): Record<string, unknown> {
+function operationalToolInput(input: Record<string, unknown>): Record<string, unknown> {
+	if (!Object.hasOwn(input, "i")) return input;
 	const operational = Object.create(null) as Record<string, unknown>;
 	for (const [key, value] of Object.entries(input)) {
 		if (key !== "i") operational[key] = value;
@@ -712,7 +721,7 @@ function hubLaunchFingerprint(
 	cwd: string,
 	sessionId: string,
 ): string {
-	return canonicalDigest({ sessionId, cwd, input: operationalHubInput(input) });
+	return canonicalDigest({ sessionId, cwd, input: operationalToolInput(input) });
 }
 
 function hubLaunchAuthorization(
@@ -726,7 +735,7 @@ function hubLaunchAuthorization(
 		sessionId,
 		cwd: ctx.cwd,
 		name,
-		launchInput: structuredClone(operationalHubInput(event.input)),
+		launchInput: structuredClone(operationalToolInput(event.input)),
 		launchFingerprint: hubLaunchFingerprint(event.input, ctx.cwd, sessionId),
 	};
 }
@@ -803,7 +812,7 @@ function toolCallFingerprint(event: ToolCallEvent, cwd: string, epoch: number): 
 		approvalEpoch: epoch,
 		cwd,
 		toolName: event.toolName,
-		input: event.input,
+		input: operationalToolInput(event.input),
 	});
 }
 
@@ -822,6 +831,9 @@ function pendingApprovalResult(event: ToolCallEvent, pending: PendingApproval): 
 			"Invoke the native ask tool exactly once with the JSON template below, then wait for its actual tool result.",
 			`Replace ${JSON.stringify(APPROVAL_RATIONALE_PLACEHOLDER)} in the approval option preview with a concise, single-line rationale. Change nothing else.`,
 			"Do not use resolve. Do not retry the blocked call until Ask returns.",
+			...(pending.nestedEvalOrigin
+				? ["This is a blocked eval child. Let already-dispatched siblings settle and retain their results. Approve and retry only blocked operations individually. Do not rerun the whole eval or repeat completed siblings."]
+				: []),
 			`Native Ask input (use exactly after replacing the rationale placeholder):\n${JSON.stringify(pending.askInput, null, 2)}`,
 		].join("\n"),
 	};
@@ -1100,8 +1112,7 @@ function approvalAskOutcome(event: ToolResultEvent, pending: PendingApproval): A
 	if (
 		details.chatRedirect === true ||
 		details.timedOut === true ||
-		details.customInput !== undefined ||
-		details.note !== undefined
+		details.customInput !== undefined
 	) {
 		return "reject";
 	}
@@ -1146,7 +1157,7 @@ function handleAskToolResult(
 			? matched.pending.hubProcessName
 				? `OMP Auto Guard recorded approval ${matched.pending.id}. Retry the exact ${matched.pending.toolName} call now with unchanged arguments. The launch permit is single-use; if it succeeds, same-spec launch and lifecycle stop/restart/signal calls for ${JSON.stringify(matched.pending.hubProcessName)} will be remembered for this session and working directory.`
 				: matched.pending.nestedEvalOrigin
-					? `OMP Auto Guard recorded approval ${matched.pending.id}. Call ${matched.pending.toolName} directly now with the exact unchanged arguments. Do not rerun eval. This approval is single-use.`
+					? `OMP Auto Guard recorded approval ${matched.pending.id}. Call ${matched.pending.toolName} directly now with the exact unchanged operational arguments. The intent label i does not affect approval. Do not rerun eval or repeat completed siblings. This approval is single-use.`
 					: `OMP Auto Guard recorded approval ${matched.pending.id}. Retry the exact ${matched.pending.toolName} call now with unchanged arguments. This approval is single-use.`
 			: outcome === "review-batch"
 				? `OMP Auto Guard did not authorize ${matched.pending.toolName}. Present one concrete revised batch that names every operation, target, live effect, verification step, and rollback, then wait for explicit user approval. Do not retry ${matched.pending.toolName} until that approval has been incorporated.`
@@ -1180,6 +1191,15 @@ async function enforceVerdict(
 	}
 
 	const fingerprint = toolCallFingerprint(event, ctx.cwd, approvalEpoch);
+	// Concurrent reviews of the same operation must preserve the existing handshake.
+	const existing = approvals.get(fingerprint);
+	if (existing?.status === "pending") return pendingApprovalResult(event, existing);
+	if (existing?.status === "approved") {
+		return {
+			block: true,
+			reason: `OMP Auto Guard already recorded approval ${existing.id}. Retry the exact ${event.toolName} operation to consume its single-use permit. Do not repeat completed siblings.`,
+		};
+	}
 	const approvalId = "reviewId" in verdict && verdict.reviewId ? verdict.reviewId : randomUUID();
 	const pending: PendingApproval = {
 		id: approvalId,
@@ -1259,24 +1279,6 @@ export default function autoGuard(pi: ExtensionAPI): void {
 		cleanupXdevDispatchGrants(xdevDispatchGrants);
 		if ([...approvals.values()].some(approval => approval.cwd !== ctx.cwd || approval.epoch !== approvalEpoch)) {
 			clearApprovals();
-		}
-		if (ctx.hasPendingMessages()) {
-			const interruptedApprovalAsk =
-				typedEvent.toolName === "ask" && resemblesGuardApprovalAsk(typedEvent.input);
-			clearApprovals();
-			const safeRead =
-				staticVerdict.decision === "allow" &&
-				staticVerdict.category === "read" &&
-				classifiedEvent.toolName !== "checkpoint" &&
-				classifiedEvent.toolName !== "rewind";
-			if (typedEvent.toolName !== "todo" && !safeRead) {
-				return {
-					block: true,
-					reason: interruptedApprovalAsk
-						? "OMP Auto Guard invalidated this approval Ask because queued input or an advisory is pending. Incorporate it, then retry the original blocked operation to obtain a fresh approval template. Do not retry this Ask."
-						: `OMP Auto Guard paused ${typedEvent.toolName} because queued input or an advisory is pending. Retry only after the agent incorporates it.`,
-				};
-			}
 		}
 		const xdevDispatchGrant = xdevDispatchGrants.get(typedEvent.toolCallId);
 		if (xdevDispatchGrant) {
@@ -1358,13 +1360,6 @@ export default function autoGuard(pi: ExtensionAPI): void {
 				approvedPlan,
 				matchingSupervisedProcess(typedEvent, ctx, supervisedProcesses),
 			);
-			if (ctx.hasPendingMessages()) {
-				clearApprovals();
-				return {
-					block: true,
-					reason: `OMP Auto Guard discarded the ${typedEvent.toolName} review because user input arrived while classification was in flight. Retry only after the agent incorporates that input.`,
-				};
-			}
 			if (eventApprovalEpoch !== approvalEpoch) {
 				return {
 					block: true,
@@ -1387,18 +1382,6 @@ export default function autoGuard(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.on("turn_end", event => {
-		if (!event.toolResults.some(result => result.toolName === "todo" && result.isError)) return;
-		// Core queues its Todo error reminder before turn_end but does not schedule delivery.
-		pi.sendMessage(
-			{
-				customType: "omp-auto-guard-todo-error-continuation",
-				content: "Consume the queued Todo error reminder. Correct Todo only if still needed; otherwise do not call another tool.",
-				display: false,
-			},
-			{ deliverAs: "nextTurn", triggerTurn: true },
-		);
-	});
 
 	pi.on("tool_result", event => {
 		xdevDispatchGrants.delete(event.toolCallId);

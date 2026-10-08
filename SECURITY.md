@@ -26,9 +26,11 @@ Auto Guard runs inside the OMP process and observes tool calls before execution.
 - Allow bounded effects without using semantic task scope as a blocking safety boundary.
 - Require explicit approval for known material consequences not already authorized.
 - Require review when a plausible material operational effect cannot be established.
-- Bind each ordinary approval permit to one exact canonical call, working directory, and approval epoch.
+- Bind each ordinary approval permit to one exact canonical operation, working directory, and approval epoch. Exclude only the top-level harness intent label `i` from argument identity.
 - Treat a successfully permitted Hub launch as a separate session-and-working-directory-scoped authorization for only its unchanged launch and name-bound stop, restart, or signal operations.
-- Invalidate ordinary permits at agent and session lifecycle boundaries, working-directory changes, and pending user input; clear supervised-process authorization at session lifecycle boundaries.
+- Honor an approval selection even when it includes a note. Preserve the note as agent guidance without reclassifying or invalidating that approval.
+- Keep model review of eval's direct effects and independent review of dispatched host tools. Eval approval grants no child authority. Concurrent identical requests may share one pending handshake, and each approval permits one execution.
+- Invalidate ordinary permits at agent and session lifecycle boundaries and working-directory changes. Queued messages do not invalidate permits or pause execution. Clear supervised-process authorization at session lifecycle boundaries.
 - Fail closed when classification or approval cannot complete safely.
 
 Auto Guard is not a security boundary. It does not isolate tools, constrain the host process, replace operating-system authorization, or guarantee that language-model judgments are correct.
